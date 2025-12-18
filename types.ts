@@ -1,10 +1,10 @@
 export enum VoiceName {
-  Puck = 'Puck',
-  Charon = 'Charon',
-  Kore = 'Kore',
-  Fenrir = 'Fenrir',
-  Zephyr = 'Zephyr',
-  Aoede = 'Aoede'
+  Alloy = 'alloy',
+  Echo = 'echo',
+  Fable = 'fable',
+  Onyx = 'onyx',
+  Nova = 'nova',
+  Shimmer = 'shimmer'
 }
 
 export interface Speaker {
