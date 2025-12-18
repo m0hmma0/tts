@@ -70,17 +70,13 @@ const mapSpeedToNumeric = (speed?: string): number => {
 
 /**
  * Injects hints into the text to help OpenAI's TTS interpret tone/accent.
- * While OpenAI TTS-1 doesn't officially support 'emotions', providing context
- * in brackets or prepending descriptors can sometimes influence the model.
+ * While OpenAI TTS doesn't officially support 'emotions' via dedicated parameters, 
+ * providing context in brackets or prepending descriptors can influence the output tone.
  */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
   
   let processedText = text;
-  
-  // Handle directions in parentheses (e.g. "(excitedly)")
-  // We keep them in the text for OpenAI to "read" the context, 
-  // but we can also prepend them explicitly if they aren't already there.
   
   const hints: string[] = [];
   if (speaker.accent && speaker.accent !== 'Neutral') {
@@ -98,11 +94,11 @@ export const formatPromptWithSettings = (text: string, speaker?: Speaker): strin
 
 export const generateLineAudio = async (voice: string, text: string, speaker?: Speaker): Promise<string> => {
   return executeWithRetryAndRotation(async (client) => {
-    // We pass the formatted text which includes hints for accent/directions
+    // Use the formatted text which includes hints for accent/directions
     const input = formatPromptWithSettings(text, speaker);
     
     const response = await client.audio.speech.create({
-      model: "tts-1",
+      model: "gpt-4o-mini-tts", // Updated to gpt-4o-mini-tts
       voice: voice as any,
       input: input,
       response_format: "pcm", // 24kHz 16-bit PCM

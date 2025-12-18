@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -13,11 +14,11 @@ import { Speaker, VoiceName, GenerationState } from './types';
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
-Joe: How's it going today Jane?
-Jane: [Sips coffee] Not too bad, how about you?
+Joe: (cheerfully) How's it going today Jane?
+Jane: [Sips coffee] (sleepily) Not too bad, how about you?
 [They clink mugs]
-Joe: Can't complain. Just testing out this new studio powered by OpenAI.
-Jane: It sounds incredible!`;
+Joe: (excitedly) Can't complain. Just testing out this new studio powered by gpt-4o-mini-tts.
+Jane: (impressed) It sounds incredible!`;
 
 const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Joe', voice: VoiceName.Onyx, accent: 'Neutral', speed: 'Normal' },
@@ -64,6 +65,7 @@ export default function App() {
            speechBuffer = audioCache[key];
          } else {
            const speakerName = line.slice(0, colonIdx).trim();
+           // In this implementation, the OpenAI service will handle context hints within the text
            const message = line.slice(colonIdx + 1).replace(/\[.*?\]/g, '').trim();
            if (!message) continue;
 
@@ -101,7 +103,7 @@ export default function App() {
       serializedCache[key] = audioBufferToBase64(buffer as AudioBuffer);
     }
     const projectData = {
-      version: '1.1',
+      version: '1.2',
       script,
       speakers,
       audioCache: serializedCache
@@ -152,7 +154,7 @@ export default function App() {
               </span>
               OpenAI Speech Studio
             </h1>
-            <p className="mt-2 text-slate-400">Multi-speaker dialogue powered by OpenAI TTS-1.</p>
+            <p className="mt-2 text-slate-400">Multi-speaker dialogue powered by GPT-4o Mini TTS.</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center bg-slate-900 p-1 rounded-lg border border-slate-800">
@@ -163,7 +165,7 @@ export default function App() {
             <input type="file" ref={fileInputRef} onChange={handleLoadProject} className="hidden" accept=".json" />
             <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-900 px-3 py-2 rounded-lg border border-slate-800">
                 <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-                openai tts-1
+                gpt-4o-mini-tts
             </div>
           </div>
         </header>
