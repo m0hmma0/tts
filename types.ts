@@ -1,3 +1,4 @@
+
 export enum VoiceName {
   Alloy = 'alloy',
   Echo = 'echo',
@@ -6,6 +7,19 @@ export enum VoiceName {
   Nova = 'nova',
   Shimmer = 'shimmer'
 }
+
+export const ACCENTS = [
+  'Neutral',
+  'American',
+  'British',
+  'Australian',
+  'Indian',
+  'Southern US',
+  'Irish',
+  'Scottish',
+  'French-accented English',
+  'Spanish-accented English'
+];
 
 export interface Speaker {
   id: string;

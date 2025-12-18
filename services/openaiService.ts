@@ -1,3 +1,4 @@
+
 import OpenAI from "openai";
 import { Speaker } from "../types";
 
@@ -41,7 +42,6 @@ async function executeWithRetryAndRotation<T>(
         const status = error?.status || error?.code;
         const msg = error?.message || "";
 
-        // OpenAI Quota or Rate Limit (429)
         if (status === 429 || msg.toLowerCase().includes("quota")) {
           rotateKey();
           continue;
@@ -68,28 +68,48 @@ const mapSpeedToNumeric = (speed?: string): number => {
   }
 };
 
+/**
+ * Injects hints into the text to help OpenAI's TTS interpret tone/accent.
+ * While OpenAI TTS-1 doesn't officially support 'emotions', providing context
+ * in brackets or prepending descriptors can sometimes influence the model.
+ */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
-  // Note: OpenAI TTS doesn't use "system instructions" for style, 
-  // so we keep the text clean but we can add subtle phonetic hints if needed.
-  // For now, we return text as-is and handle speed via API parameter.
-  return text;
+  
+  let processedText = text;
+  
+  // Handle directions in parentheses (e.g. "(excitedly)")
+  // We keep them in the text for OpenAI to "read" the context, 
+  // but we can also prepend them explicitly if they aren't already there.
+  
+  const hints: string[] = [];
+  if (speaker.accent && speaker.accent !== 'Neutral') {
+    hints.push(`Accent: ${speaker.accent}`);
+  }
+
+  if (hints.length > 0) {
+    return `[${hints.join(', ')}] ${processedText}`;
+  }
+
+  return processedText;
 };
 
 // --- Exported Functions ---
 
 export const generateLineAudio = async (voice: string, text: string, speaker?: Speaker): Promise<string> => {
   return executeWithRetryAndRotation(async (client) => {
+    // We pass the formatted text which includes hints for accent/directions
+    const input = formatPromptWithSettings(text, speaker);
+    
     const response = await client.audio.speech.create({
       model: "tts-1",
       voice: voice as any,
-      input: text,
+      input: input,
       response_format: "pcm", // 24kHz 16-bit PCM
       speed: mapSpeedToNumeric(speaker?.speed),
     });
 
     const buffer = await response.arrayBuffer();
-    // Convert ArrayBuffer to Base64 for the existing app architecture
     const uint8 = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < uint8.length; i++) {
