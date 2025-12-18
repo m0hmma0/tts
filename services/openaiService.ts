@@ -14,14 +14,13 @@ const getClient = (): OpenAI => {
   if (!key) throw new Error("No API Key available.");
   return new OpenAI({ 
     apiKey: key,
-    dangerouslyAllowBrowser: true // Required for client-side usage
+    dangerouslyAllowBrowser: true 
   });
 };
 
 const rotateKey = () => {
   if (API_KEYS.length <= 1) return;
   currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-  console.log(`Switching OpenAI Key to index: ${currentKeyIndex}`);
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -56,8 +55,6 @@ async function executeWithRetryAndRotation<T>(
   throw new Error("Failed after exhausting retries and keys.");
 }
 
-// --- Helper Utilities ---
-
 const mapSpeedToNumeric = (speed?: string): number => {
   switch (speed) {
     case 'Very Slow': return 0.5;
@@ -69,39 +66,31 @@ const mapSpeedToNumeric = (speed?: string): number => {
 };
 
 /**
- * Injects hints into the text to help OpenAI's TTS interpret tone/accent.
- * While OpenAI TTS doesn't officially support 'emotions' via dedicated parameters, 
- * providing context in brackets or prepending descriptors can influence the output tone.
+ * Enhanced prompt formatting.
+ * Keeps emotions (parentheses) and directions [brackets] as context for the model.
  */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
-  if (!speaker) return text;
-  
-  let processedText = text;
-  
-  const hints: string[] = [];
-  if (speaker.accent && speaker.accent !== 'Neutral') {
-    hints.push(`Accent: ${speaker.accent}`);
+  let context = "";
+  if (speaker?.accent && speaker.accent !== 'Neutral') {
+    context += `[Accent: ${speaker.accent}] `;
   }
-
-  if (hints.length > 0) {
-    return `[${hints.join(', ')}] ${processedText}`;
-  }
-
-  return processedText;
+  
+  // We keep the original text because it contains the user's (emotion) and [direction] tags.
+  // The GPT-4o Mini TTS model uses these as non-verbal cues for tone generation.
+  return context + text;
 };
 
 // --- Exported Functions ---
 
 export const generateLineAudio = async (voice: string, text: string, speaker?: Speaker): Promise<string> => {
   return executeWithRetryAndRotation(async (client) => {
-    // Use the formatted text which includes hints for accent/directions
     const input = formatPromptWithSettings(text, speaker);
     
     const response = await client.audio.speech.create({
-      model: "gpt-4o-mini-tts", // Updated to gpt-4o-mini-tts
+      model: "gpt-4o-mini-tts",
       voice: voice as any,
       input: input,
-      response_format: "pcm", // 24kHz 16-bit PCM
+      response_format: "pcm",
       speed: mapSpeedToNumeric(speaker?.speed),
     });
 
