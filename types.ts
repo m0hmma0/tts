@@ -7,15 +7,12 @@ export enum VoiceName {
   Shimmer = 'shimmer'
 }
 
-export type AccentType = 'Neutral' | 'Indian' | 'UK' | 'US' | 'Australian';
-
 export interface Speaker {
   id: string;
   name: string;
   voice: VoiceName;
-  accent: AccentType;
-  speed: string;
-  defaultEmotion?: string;
+  accent?: string;
+  speed?: string;
 }
 
 export interface GenerationState {

@@ -68,53 +68,28 @@ const mapSpeedToNumeric = (speed?: string): number => {
   }
 };
 
-/**
- * Enhanced text processing for OpenAI TTS.
- * While OpenAI doesn't officially support tags, descriptive prefixes 
- * can sometimes influence prosody. We also ensure punctuation is clear.
- */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
-  
-  // Clean up existing tags to avoid reading them literally if they are duplicates
-  let cleanedText = text.replace(/\[.*?\]/g, '').trim();
-  
-  // Extract inline emotions in parentheses like (angry)
-  const emotionMatch = cleanedText.match(/\((.*?)\)/);
-  const inlineEmotion = emotionMatch ? emotionMatch[1] : null;
-  
-  // If we found an inline emotion, remove it from the read text
-  if (inlineEmotion) {
-    cleanedText = cleanedText.replace(/\((.*?)\)/, '').trim();
-  }
-
-  const emotion = inlineEmotion || speaker.defaultEmotion || 'neutral';
-  const accent = speaker.accent !== 'Neutral' ? `${speaker.accent} accent` : '';
-  
-  // We use a specific descriptive prefix. Note: OpenAI might read this.
-  // A better way is to simply ensure the text ends with appropriate punctuation.
-  if (emotion.toLowerCase() === 'angry') cleanedText += "!";
-  if (emotion.toLowerCase() === 'sad') cleanedText += "...";
-  if (emotion.toLowerCase() === 'happy' || emotion.toLowerCase() === 'excited') cleanedText += "!";
-
-  return cleanedText;
+  // Note: OpenAI TTS doesn't use "system instructions" for style, 
+  // so we keep the text clean but we can add subtle phonetic hints if needed.
+  // For now, we return text as-is and handle speed via API parameter.
+  return text;
 };
 
 // --- Exported Functions ---
 
 export const generateLineAudio = async (voice: string, text: string, speaker?: Speaker): Promise<string> => {
   return executeWithRetryAndRotation(async (client) => {
-    const processedText = formatPromptWithSettings(text, speaker);
-    
     const response = await client.audio.speech.create({
       model: "tts-1",
       voice: voice as any,
-      input: processedText,
+      input: text,
       response_format: "pcm", // 24kHz 16-bit PCM
       speed: mapSpeedToNumeric(speaker?.speed),
     });
 
     const buffer = await response.arrayBuffer();
+    // Convert ArrayBuffer to Base64 for the existing app architecture
     const uint8 = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < uint8.length; i++) {
