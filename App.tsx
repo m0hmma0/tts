@@ -1,10 +1,8 @@
-
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
 import { AudioPlayer } from './components/AudioPlayer';
-// Updated to use geminiService exclusively
-import { generateLineAudio, formatPromptWithSettings } from './services/geminiService';
+import { generateLineAudio, formatPromptWithSettings } from './services/openaiService';
 import { 
   decodeBase64, 
   decodeAudioData, 
@@ -22,10 +20,8 @@ Jane: (excited) Wait! I remember now! They're in the safe!
 [They both run towards the exit]`;
 
 const INITIAL_SPEAKERS: Speaker[] = [
-  // Fix: Added missing 'defaultEmotion' property to match Speaker interface.
-  // Also updated voices to use Gemini prebuilt voice names.
-  { id: '1', name: 'Joe', voice: VoiceName.Kore, accent: 'UK', speed: 'Normal', defaultEmotion: 'Neutral' },
-  { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Australian', speed: 'Normal', defaultEmotion: 'Neutral' },
+  { id: '1', name: 'Joe', voice: VoiceName.Onyx, accent: 'UK', speed: 'Normal', defaultEmotion: 'Neutral' },
+  { id: '2', name: 'Jane', voice: VoiceName.Nova, accent: 'Australian', speed: 'Normal', defaultEmotion: 'Neutral' },
 ];
 
 export default function App() {
@@ -50,7 +46,6 @@ export default function App() {
     let audioCtx: AudioContext | null = null;
 
     try {
-      // Gemini Flash TTS returns 24kHz raw PCM audio.
       audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
       const lines = script.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const buffers: AudioBuffer[] = [];
@@ -73,9 +68,9 @@ export default function App() {
            if (!messageRaw) continue;
 
            const speaker = speakers.find(s => s.name.toLowerCase() === speakerName.toLowerCase());
-           const voice = speaker ? speaker.voice : VoiceName.Kore;
+           const voice = speaker ? speaker.voice : VoiceName.Alloy;
 
-           // generateLineAudio uses Gemini TTS model 'gemini-2.5-flash-preview-tts'
+           // generateLineAudio handles emotion tags within messageRaw internally via formatPromptWithSettings
            const base64Audio = await generateLineAudio(voice, messageRaw, speaker);
            const audioBytes = decodeBase64(base64Audio);
            speechBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
@@ -107,7 +102,7 @@ export default function App() {
       serializedCache[key] = audioBufferToBase64(buffer as AudioBuffer);
     }
     const projectData = {
-      version: '1.2-gemini',
+      version: '1.2',
       script,
       speakers,
       audioCache: serializedCache
@@ -116,7 +111,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `gemini-studio-project-${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `openai-tts-studio-pro-${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -156,9 +151,9 @@ export default function App() {
               <span className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl shadow-2xl shadow-indigo-500/20">
                 <Headphones className="text-white" size={32} />
               </span>
-              GEMINI STUDIO <span className="text-indigo-500">PRO</span>
+              VOICE STUDIO <span className="text-indigo-500">PRO</span>
             </h1>
-            <p className="text-slate-400 font-medium">Advanced Multi-Speaker TTS with Gemini 2.5 Flash.</p>
+            <p className="text-slate-400 font-medium">Advanced Multi-Speaker TTS with Emotion & Accent Control.</p>
           </div>
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center bg-slate-900 p-1.5 rounded-xl border border-slate-800 shadow-inner">

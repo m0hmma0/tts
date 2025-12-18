@@ -1,10 +1,10 @@
-
 export enum VoiceName {
-  Kore = 'Kore',
-  Puck = 'Puck',
-  Charon = 'Charon',
-  Fenrir = 'Fenrir',
-  Zephyr = 'Zephyr'
+  Alloy = 'alloy',
+  Echo = 'echo',
+  Fable = 'fable',
+  Onyx = 'onyx',
+  Nova = 'nova',
+  Shimmer = 'shimmer'
 }
 
 export type AccentType = 'Neutral' | 'Indian' | 'UK' | 'US' | 'Australian';
@@ -15,7 +15,7 @@ export interface Speaker {
   voice: VoiceName;
   accent: AccentType;
   speed: string;
-  defaultEmotion: string;
+  defaultEmotion?: string;
 }
 
 export interface GenerationState {

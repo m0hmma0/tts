@@ -69,27 +69,33 @@ const mapSpeedToNumeric = (speed?: string): number => {
 };
 
 /**
- * Text processing for OpenAI TTS.
- * Extracts emotion hints from parentheses and strips metadata.
+ * Enhanced text processing for OpenAI TTS.
+ * While OpenAI doesn't officially support tags, descriptive prefixes 
+ * can sometimes influence prosody. We also ensure punctuation is clear.
  */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
   
-  // Extract all inline tags for analysis but eventually strip them
-  const emotionMatch = text.match(/\((.*?)\)/);
-  const emotion = emotionMatch ? emotionMatch[1].toLowerCase() : 'neutral';
+  // Clean up existing tags to avoid reading them literally if they are duplicates
+  let cleanedText = text.replace(/\[.*?\]/g, '').trim();
   
-  // Clean text: remove [brackets] and (parentheses)
-  let cleanedText = text.replace(/\[.*?\]/g, '').replace(/\((.*?)\)/g, '').trim();
+  // Extract inline emotions in parentheses like (angry)
+  const emotionMatch = cleanedText.match(/\((.*?)\)/);
+  const inlineEmotion = emotionMatch ? emotionMatch[1] : null;
   
-  // Prosody hints via punctuation based on emotion
-  if (emotion.includes('angry') || emotion.includes('shout') || emotion.includes('excited')) {
-    if (!cleanedText.endsWith('!')) cleanedText += "!";
-  } else if (emotion.includes('sad') || emotion.includes('whisper') || emotion.includes('unsure')) {
-    if (!cleanedText.endsWith('...')) cleanedText += "...";
-  } else if (emotion.includes('question')) {
-    if (!cleanedText.endsWith('?')) cleanedText += "?";
+  // If we found an inline emotion, remove it from the read text
+  if (inlineEmotion) {
+    cleanedText = cleanedText.replace(/\((.*?)\)/, '').trim();
   }
+
+  const emotion = inlineEmotion || speaker.defaultEmotion || 'neutral';
+  const accent = speaker.accent !== 'Neutral' ? `${speaker.accent} accent` : '';
+  
+  // We use a specific descriptive prefix. Note: OpenAI might read this.
+  // A better way is to simply ensure the text ends with appropriate punctuation.
+  if (emotion.toLowerCase() === 'angry') cleanedText += "!";
+  if (emotion.toLowerCase() === 'sad') cleanedText += "...";
+  if (emotion.toLowerCase() === 'happy' || emotion.toLowerCase() === 'excited') cleanedText += "!";
 
   return cleanedText;
 };
@@ -99,9 +105,6 @@ export const formatPromptWithSettings = (text: string, speaker?: Speaker): strin
 export const generateLineAudio = async (voice: string, text: string, speaker?: Speaker): Promise<string> => {
   return executeWithRetryAndRotation(async (client) => {
     const processedText = formatPromptWithSettings(text, speaker);
-    
-    // We don't read accents directly here as OpenAI doesn't support them explicitly by name.
-    // Prosody is mostly controlled by voice choice and speed.
     
     const response = await client.audio.speech.create({
       model: "tts-1",

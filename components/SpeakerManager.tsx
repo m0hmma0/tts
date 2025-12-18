@@ -1,9 +1,7 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Speaker, VoiceName, AccentType } from '../types';
-import { Plus, Trash2, User, Play, Loader2, Square, Gauge, Globe } from 'lucide-react';
-// Updated to use geminiService
-import { generateLineAudio } from '../services/geminiService';
+import { Plus, Trash2, User, Play, Loader2, Square, Gauge, Globe, Smile } from 'lucide-react';
+import { generateLineAudio } from '../services/openaiService';
 import { decodeBase64, decodeAudioData } from '../utils/audioUtils';
 
 interface SpeakerManagerProps {
@@ -13,6 +11,7 @@ interface SpeakerManagerProps {
 
 const SPEEDS = ['Very Slow', 'Slow', 'Normal', 'Fast', 'Very Fast'];
 const ACCENTS: AccentType[] = ['Neutral', 'Indian', 'UK', 'US', 'Australian'];
+const EMOTIONS = ['Neutral', 'Angry', 'Happy', 'Sad', 'Excited', 'Serious', 'Whisper'];
 
 export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpeakers }) => {
   const [previewState, setPreviewState] = useState<{ id: string; status: 'loading' | 'playing' } | null>(null);
@@ -30,7 +29,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     setSpeakers([...speakers, {
       id: crypto.randomUUID(),
       name: `Speaker ${speakers.length + 1}`,
-      voice: VoiceName.Kore,
+      voice: VoiceName.Alloy,
       accent: 'Neutral',
       speed: 'Normal',
       defaultEmotion: 'Neutral'
@@ -59,8 +58,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     setPreviewState({ id: speaker.id, status: 'loading' });
 
     try {
-      const sampleText = `Hi, I'm ${speaker.name}. I am using a ${speaker.accent} style.`;
-      // generateLineAudio now points to Gemini TTS service
+      const sampleText = `Hi, I'm ${speaker.name}. I am using a ${speaker.accent} style with a ${speaker.defaultEmotion} tone.`;
       const base64Audio = await generateLineAudio(speaker.voice, sampleText, speaker);
       
       if (!audioContextRef.current) {
@@ -102,7 +100,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                 <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 tracking-wider">Base Voice</label>
                 <div className="flex gap-2">
                   <select value={speaker.voice} onChange={(e) => updateSpeaker(speaker.id, 'voice', e.target.value as VoiceName)} className="w-full bg-slate-800 text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-700 focus:border-blue-500 outline-none">
-                    {Object.values(VoiceName).map((v) => <option key={v} value={v}>{v}</option>)}
+                    {Object.values(VoiceName).map((v) => <option key={v} value={v}>{v.charAt(0).toUpperCase() + v.slice(1)}</option>)}
                   </select>
                   <button onClick={() => handlePreview(speaker)} className={`shrink-0 w-[40px] h-[38px] flex items-center justify-center rounded-lg border transition-all ${previewState?.id === speaker.id ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'}`}>
                     {previewState?.id === speaker.id ? (previewState.status === 'loading' ? <Loader2 size={16} className="animate-spin" /> : <Square size={16} fill="currentColor" />) : <Play size={16} fill="currentColor" />}
@@ -111,14 +109,20 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
               </div>
             </div>
             
-            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-800/50">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 border-t border-slate-800/50">
                <div>
                   <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 flex items-center gap-1"><Globe size={10} /> Accent</label>
                   <select value={speaker.accent || 'Neutral'} onChange={(e) => updateSpeaker(speaker.id, 'accent', e.target.value)} className="w-full bg-slate-800 text-slate-300 text-xs px-2 py-2 rounded-lg border border-slate-700 outline-none focus:border-blue-500">
                     {ACCENTS.map((a) => <option key={a} value={a}>{a}</option>)}
                   </select>
                </div>
-               <div className="flex items-end justify-between gap-2">
+               <div>
+                  <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 flex items-center gap-1"><Smile size={10} /> Emotion</label>
+                  <select value={speaker.defaultEmotion || 'Neutral'} onChange={(e) => updateSpeaker(speaker.id, 'defaultEmotion', e.target.value)} className="w-full bg-slate-800 text-slate-300 text-xs px-2 py-2 rounded-lg border border-slate-700 outline-none focus:border-blue-500">
+                    {EMOTIONS.map((e) => <option key={e} value={e}>{e}</option>)}
+                  </select>
+               </div>
+               <div className="col-span-2 sm:col-span-1 flex items-end justify-between sm:justify-start gap-2">
                   <div className="flex-1">
                     <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 flex items-center gap-1"><Gauge size={10} /> Speed</label>
                     <select value={speaker.speed || 'Normal'} onChange={(e) => updateSpeaker(speaker.id, 'speed', e.target.value)} className="w-full bg-slate-800 text-slate-300 text-xs px-2 py-2 rounded-lg border border-slate-700 outline-none focus:border-blue-500">
