@@ -68,28 +68,50 @@ const mapSpeedToNumeric = (speed?: string): number => {
   }
 };
 
+/**
+ * Text processing for OpenAI TTS.
+ * Extracts emotion hints from parentheses and strips metadata.
+ */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
-  // Note: OpenAI TTS doesn't use "system instructions" for style, 
-  // so we keep the text clean but we can add subtle phonetic hints if needed.
-  // For now, we return text as-is and handle speed via API parameter.
-  return text;
+  
+  // Extract all inline tags for analysis but eventually strip them
+  const emotionMatch = text.match(/\((.*?)\)/);
+  const emotion = emotionMatch ? emotionMatch[1].toLowerCase() : 'neutral';
+  
+  // Clean text: remove [brackets] and (parentheses)
+  let cleanedText = text.replace(/\[.*?\]/g, '').replace(/\((.*?)\)/g, '').trim();
+  
+  // Prosody hints via punctuation based on emotion
+  if (emotion.includes('angry') || emotion.includes('shout') || emotion.includes('excited')) {
+    if (!cleanedText.endsWith('!')) cleanedText += "!";
+  } else if (emotion.includes('sad') || emotion.includes('whisper') || emotion.includes('unsure')) {
+    if (!cleanedText.endsWith('...')) cleanedText += "...";
+  } else if (emotion.includes('question')) {
+    if (!cleanedText.endsWith('?')) cleanedText += "?";
+  }
+
+  return cleanedText;
 };
 
 // --- Exported Functions ---
 
 export const generateLineAudio = async (voice: string, text: string, speaker?: Speaker): Promise<string> => {
   return executeWithRetryAndRotation(async (client) => {
+    const processedText = formatPromptWithSettings(text, speaker);
+    
+    // We don't read accents directly here as OpenAI doesn't support them explicitly by name.
+    // Prosody is mostly controlled by voice choice and speed.
+    
     const response = await client.audio.speech.create({
       model: "tts-1",
       voice: voice as any,
-      input: text,
+      input: processedText,
       response_format: "pcm", // 24kHz 16-bit PCM
       speed: mapSpeedToNumeric(speaker?.speed),
     });
 
     const buffer = await response.arrayBuffer();
-    // Convert ArrayBuffer to Base64 for the existing app architecture
     const uint8 = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < uint8.length; i++) {

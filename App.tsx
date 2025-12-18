@@ -1,8 +1,10 @@
+
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
 import { AudioPlayer } from './components/AudioPlayer';
-import { generateLineAudio, formatPromptWithSettings } from './services/openaiService';
+// Updated to use geminiService exclusively
+import { generateLineAudio, formatPromptWithSettings } from './services/geminiService';
 import { 
   decodeBase64, 
   decodeAudioData, 
@@ -10,18 +12,20 @@ import {
   audioBufferToBase64
 } from './utils/audioUtils';
 import { Speaker, VoiceName, GenerationState } from './types';
-import { Sparkles, AlertCircle, Loader2, Save, FolderOpen } from 'lucide-react';
+import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, Headphones } from 'lucide-react';
 
-const INITIAL_SCRIPT = `[Scene: The office, early morning]
-Joe: How's it going today Jane?
-Jane: [Sips coffee] Not too bad, how about you?
-[They clink mugs]
-Joe: Can't complain. Just testing out this new studio powered by OpenAI.
-Jane: It sounds incredible!`;
+const INITIAL_SCRIPT = `[Scene: A high-stakes confrontation]
+Joe: (angry) Where did you put the files, Jane?
+Jane: (whisper) I don't know what you're talking about...
+Joe: Don't lie to me! 
+Jane: (excited) Wait! I remember now! They're in the safe!
+[They both run towards the exit]`;
 
 const INITIAL_SPEAKERS: Speaker[] = [
-  { id: '1', name: 'Joe', voice: VoiceName.Onyx, accent: 'Neutral', speed: 'Normal' },
-  { id: '2', name: 'Jane', voice: VoiceName.Nova, accent: 'Neutral', speed: 'Normal' },
+  // Fix: Added missing 'defaultEmotion' property to match Speaker interface.
+  // Also updated voices to use Gemini prebuilt voice names.
+  { id: '1', name: 'Joe', voice: VoiceName.Kore, accent: 'UK', speed: 'Normal', defaultEmotion: 'Neutral' },
+  { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Australian', speed: 'Normal', defaultEmotion: 'Neutral' },
 ];
 
 export default function App() {
@@ -46,6 +50,7 @@ export default function App() {
     let audioCtx: AudioContext | null = null;
 
     try {
+      // Gemini Flash TTS returns 24kHz raw PCM audio.
       audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
       const lines = script.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const buffers: AudioBuffer[] = [];
@@ -64,13 +69,14 @@ export default function App() {
            speechBuffer = audioCache[key];
          } else {
            const speakerName = line.slice(0, colonIdx).trim();
-           const message = line.slice(colonIdx + 1).replace(/\[.*?\]/g, '').trim();
-           if (!message) continue;
+           const messageRaw = line.slice(colonIdx + 1).trim();
+           if (!messageRaw) continue;
 
            const speaker = speakers.find(s => s.name.toLowerCase() === speakerName.toLowerCase());
-           const voice = speaker ? speaker.voice : VoiceName.Alloy;
+           const voice = speaker ? speaker.voice : VoiceName.Kore;
 
-           const base64Audio = await generateLineAudio(voice, message, speaker);
+           // generateLineAudio uses Gemini TTS model 'gemini-2.5-flash-preview-tts'
+           const base64Audio = await generateLineAudio(voice, messageRaw, speaker);
            const audioBytes = decodeBase64(base64Audio);
            speechBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
            
@@ -101,7 +107,7 @@ export default function App() {
       serializedCache[key] = audioBufferToBase64(buffer as AudioBuffer);
     }
     const projectData = {
-      version: '1.1',
+      version: '1.2-gemini',
       script,
       speakers,
       audioCache: serializedCache
@@ -110,7 +116,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `openai-tts-project-${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `gemini-studio-project-${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -142,48 +148,57 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 p-4 md:p-8 font-sans">
-      <div className="max-w-6xl mx-auto space-y-8">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-800">
-          <div>
-            <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-              <span className="p-2 bg-indigo-600 rounded-lg shadow-lg shadow-indigo-900/50">
-                <Sparkles className="text-white" size={24} />
+    <div className="min-h-screen bg-slate-950 text-slate-200 p-4 md:p-8 font-sans selection:bg-indigo-500/30">
+      <div className="max-w-7xl mx-auto space-y-8">
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-8 border-b border-slate-800">
+          <div className="space-y-1">
+            <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tight">
+              <span className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl shadow-2xl shadow-indigo-500/20">
+                <Headphones className="text-white" size={32} />
               </span>
-              OpenAI Speech Studio
+              GEMINI STUDIO <span className="text-indigo-500">PRO</span>
             </h1>
-            <p className="mt-2 text-slate-400">Multi-speaker dialogue powered by OpenAI TTS-1.</p>
+            <p className="text-slate-400 font-medium">Advanced Multi-Speaker TTS with Gemini 2.5 Flash.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center bg-slate-900 p-1 rounded-lg border border-slate-800">
-              <button onClick={handleSaveProject} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors"><Save size={14} />Save</button>
-              <div className="w-px h-4 bg-slate-800 mx-1"></div>
-              <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors"><FolderOpen size={14} />Open</button>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center bg-slate-900 p-1.5 rounded-xl border border-slate-800 shadow-inner">
+              <button onClick={handleSaveProject} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all active:scale-95"><Save size={16} />Save Project</button>
+              <div className="w-px h-6 bg-slate-800 mx-1"></div>
+              <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all active:scale-95"><FolderOpen size={16} />Load Project</button>
             </div>
             <input type="file" ref={fileInputRef} onChange={handleLoadProject} className="hidden" accept=".json" />
-            <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-900 px-3 py-2 rounded-lg border border-slate-800">
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-                openai tts-1
-            </div>
           </div>
         </header>
 
-        <main className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-          <div className="lg:col-span-1 space-y-6">
+        <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          <div className="lg:col-span-4 space-y-8 sticky top-8">
             <SpeakerManager speakers={speakers} setSpeakers={setSpeakers} />
-            <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
+            
+            <div className="bg-slate-900/40 rounded-2xl p-6 border border-slate-800 backdrop-blur-sm space-y-4">
               <button
                 onClick={handleGenerate}
                 disabled={generationState.isGenerating}
-                className={`w-full py-3 px-4 rounded-lg font-semibold text-white shadow-lg transition-all flex items-center justify-center gap-2 ${generationState.isGenerating ? 'bg-slate-700' : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:scale-[1.02]'}`}
+                className={`w-full py-4 px-6 rounded-xl font-bold text-white shadow-xl transition-all flex items-center justify-center gap-3 text-lg ${generationState.isGenerating ? 'bg-slate-800 cursor-not-allowed text-slate-500' : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:shadow-indigo-500/20 hover:scale-[1.02] active:scale-98'}`}
               >
-                {generationState.isGenerating ? <><Loader2 className="animate-spin" size={20} /> Generating...</> : <><Sparkles size={20} /> Generate Full Audio</>}
+                {generationState.isGenerating ? <><Loader2 className="animate-spin" size={24} /> Generating Master Mix...</> : <><Sparkles size={24} /> Render Script</>}
               </button>
-              {generationState.error && <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-2 text-red-200 text-sm"><AlertCircle size={16} className="mt-0.5 shrink-0" /><p>{generationState.error}</p></div>}
+              
+              {generationState.error && (
+                <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3 text-red-200 text-sm animate-in fade-in zoom-in duration-300">
+                  <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-400" />
+                  <p>{generationState.error}</p>
+                </div>
+              )}
+
+              {generationState.audioBuffer && (
+                <div className="animate-in fade-in slide-in-from-bottom-6 duration-700 delay-150">
+                  <AudioPlayer audioBuffer={generationState.audioBuffer} />
+                </div>
+              )}
             </div>
-             {generationState.audioBuffer && <div className="animate-in fade-in slide-in-from-bottom-4 duration-500"><AudioPlayer audioBuffer={generationState.audioBuffer} /></div>}
           </div>
-          <div className="lg:col-span-2 min-h-[500px]">
+
+          <div className="lg:col-span-8 min-h-[600px] h-[calc(100vh-250px)]">
              <ScriptEditor script={script} setScript={setScript} speakers={speakers} audioCache={audioCache} setAudioCache={setAudioCache} />
           </div>
         </main>
