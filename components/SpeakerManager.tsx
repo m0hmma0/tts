@@ -1,16 +1,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Speaker, VoiceName, ACCENTS } from '../types';
-import { Plus, Trash2, User, Play, Loader2, Square, Gauge, Globe } from 'lucide-react';
-import { generateLineAudio } from '../services/openaiService';
+import { Plus, Trash2, User, Play, Loader2, Square, Globe } from 'lucide-react';
+import { generateLineAudio } from '../services/elevenLabsService';
 import { decodeBase64, decodeAudioData } from '../utils/audioUtils';
 
 interface SpeakerManagerProps {
   speakers: Speaker[];
   setSpeakers: React.Dispatch<React.SetStateAction<Speaker[]>>;
 }
-
-const SPEEDS = ['Very Slow', 'Slow', 'Normal', 'Fast', 'Very Fast'];
 
 export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpeakers }) => {
   const [previewState, setPreviewState] = useState<{ id: string; status: 'loading' | 'playing' } | null>(null);
@@ -28,7 +26,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     setSpeakers([...speakers, {
       id: crypto.randomUUID(),
       name: `Speaker ${speakers.length + 1}`,
-      voice: VoiceName.Alloy,
+      voice: VoiceName.Rachel,
       accent: 'Neutral',
       speed: 'Normal'
     }]);
@@ -56,14 +54,14 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     setPreviewState({ id: speaker.id, status: 'loading' });
 
     try {
-      const sampleText = `Hi, I'm ${speaker.name}. Testing my ${speaker.accent} voice settings.`;
+      const sampleText = `Hi, I'm ${speaker.name}. This is a sample of my voice.`;
       const base64Audio = await generateLineAudio(speaker.voice, sampleText, speaker);
       
       if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        audioContextRef.current = new AudioContext();
       }
       const audioBytes = decodeBase64(base64Audio);
-      const buffer = await decodeAudioData(audioBytes, audioContextRef.current, 24000);
+      const buffer = await decodeAudioData(audioBytes, audioContextRef.current);
 
       const source = audioContextRef.current.createBufferSource();
       source.buffer = buffer;
@@ -81,8 +79,8 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
   return (
     <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2"><User size={20} className="text-blue-400" />Cast</h2>
-        <button onClick={addSpeaker} className="flex items-center gap-1 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-full transition-colors">
+        <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2"><User size={20} className="text-pink-400" />Cast</h2>
+        <button onClick={addSpeaker} className="flex items-center gap-1 text-xs font-medium bg-pink-600 hover:bg-pink-500 text-white px-3 py-1.5 rounded-full transition-colors">
           <Plus size={14} /> Add Speaker
         </button>
       </div>
@@ -98,9 +96,9 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                 <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1">Voice</label>
                 <div className="flex gap-2">
                   <select value={speaker.voice} onChange={(e) => updateSpeaker(speaker.id, 'voice', e.target.value as VoiceName)} className="w-full bg-slate-800 text-slate-200 text-sm px-3 py-2 rounded border border-slate-700">
-                    {Object.values(VoiceName).map((v) => <option key={v} value={v}>{v.charAt(0).toUpperCase() + v.slice(1)}</option>)}
+                    {Object.keys(VoiceName).map((name) => <option key={name} value={VoiceName[name as keyof typeof VoiceName]}>{name}</option>)}
                   </select>
-                  <button onClick={() => handlePreview(speaker)} className={`shrink-0 w-[38px] flex items-center justify-center rounded border ${previewState?.id === speaker.id ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-slate-800 border-slate-700'}`}>
+                  <button onClick={() => handlePreview(speaker)} className={`shrink-0 w-[38px] flex items-center justify-center rounded border ${previewState?.id === speaker.id ? 'bg-pink-500/20 border-pink-500 text-pink-400' : 'bg-slate-800 border-slate-700'}`}>
                     {previewState?.id === speaker.id ? (previewState.status === 'loading' ? <Loader2 size={16} className="animate-spin" /> : <Square size={16} fill="currentColor" />) : <Play size={16} fill="currentColor" />}
                   </button>
                 </div>
@@ -113,14 +111,8 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                     {ACCENTS.map((a) => <option key={a} value={a}>{a}</option>)}
                   </select>
                </div>
-               <div className="flex items-center gap-2">
-                 <div className="flex-1">
-                    <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 flex items-center gap-1"><Gauge size={10} /> Speed</label>
-                    <select value={speaker.speed || 'Normal'} onChange={(e) => updateSpeaker(speaker.id, 'speed', e.target.value)} className="w-full bg-slate-800 text-slate-300 text-xs px-2 py-1.5 rounded border border-slate-700">
-                      {SPEEDS.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                 </div>
-                 <button onClick={() => removeSpeaker(speaker.id)} className="p-1.5 mt-4 text-slate-500 hover:text-red-400 rounded transition-colors"><Trash2 size={14} /></button>
+               <div className="flex items-center gap-2 justify-end pt-4">
+                 <button onClick={() => removeSpeaker(speaker.id)} className="p-1.5 text-slate-500 hover:text-red-400 rounded transition-colors"><Trash2 size={14} /></button>
                </div>
             </div>
           </div>

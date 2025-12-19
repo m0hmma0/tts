@@ -1,11 +1,14 @@
 
 export enum VoiceName {
-  Alloy = 'alloy',
-  Echo = 'echo',
-  Fable = 'fable',
-  Onyx = 'onyx',
-  Nova = 'nova',
-  Shimmer = 'shimmer'
+  Rachel = '21m00Tcm4labaLutmOOn',
+  Antoni = 'ErXw9Cu91OCP66S9vjH6',
+  Drew = '29vD33n1HhcqSba5nPLT',
+  Clyde = '2EiwWnXFnvU5JabPnv8n',
+  Paul = '5Q0t7uMcj7Zz8H7t1In9',
+  Bella = 'EXAVITQu4vr4xnSDxMaL',
+  Domi = 'AZnzlk1XhxPqc804G3Xz',
+  Ellie = 'MF3mGyEYCl7h37341t95',
+  Josh = 'TxGEqnSAs9dnLUR6mB82'
 }
 
 export const ACCENTS = [
@@ -17,8 +20,10 @@ export const ACCENTS = [
   'Southern US',
   'Irish',
   'Scottish',
-  'French-accented English',
-  'Spanish-accented English'
+  'French',
+  'Spanish',
+  'Italian',
+  'German'
 ];
 
 export interface Speaker {
