@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -10,7 +11,7 @@ import {
   audioBufferToBase64
 } from './utils/audioUtils';
 import { Speaker, VoiceName, GenerationState } from './types';
-import { Sparkles, AlertCircle, Loader2, Save, FolderOpen } from 'lucide-react';
+import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
 Joe: How's it going today Jane?
@@ -20,9 +21,12 @@ Joe: Can't complain. Just testing out this new speech studio.
 Jane: (Whispering) It sounds incredible! [She looks amazed]`;
 
 const INITIAL_SPEAKERS: Speaker[] = [
-  { id: '1', name: 'Joe', voice: VoiceName.Kore, accent: 'Neutral', speed: 'Normal' },
-  { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal' },
+  { id: '1', name: 'Joe', voice: VoiceName.Kore, accent: 'Neutral', speed: 'Normal', instructions: 'Professional but relaxed male voice' },
+  { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
 ];
+
+// GitHub current commit number - simulated/mock for build reference
+const BUILD_REV = "8a2f4c1"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
@@ -37,7 +41,15 @@ export default function App() {
     audioBuffer: null,
   });
 
+  const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAbort = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setGenerationState(prev => ({ ...prev, isGenerating: false, error: "Generation aborted by user." }));
+    }
+  };
 
   const handleGenerate = async () => {
     if (!script.trim()) {
@@ -46,6 +58,8 @@ export default function App() {
     }
 
     setGenerationState({ isGenerating: true, error: null, audioBuffer: null });
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
 
     let audioCtx: AudioContext | null = null;
 
@@ -57,6 +71,8 @@ export default function App() {
       
       // Iterate and Collect Audio
       for (let i = 0; i < lines.length; i++) {
+         if (signal.aborted) throw new Error("AbortError");
+
          const line = lines[i];
 
          // IGNORE bracketed lines completely (Comments)
@@ -74,15 +90,16 @@ export default function App() {
          if (audioCache[key]) {
            speechBuffer = audioCache[key];
          } else {
-           // Add a substantial delay between requests to avoid hitting rate limits (RPM)
-           // Gemini Free Tier is approx 15 RPM (1 request every 4 seconds).
-           // We'll set a 2-second delay which, combined with execution time, should be safe for moderate bursts.
+           // Wait with check for abort
            if (i > 0) {
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              await new Promise(resolve => {
+                const timeoutId = setTimeout(resolve, 2000);
+                signal.addEventListener('abort', () => clearTimeout(timeoutId));
+              });
+              if (signal.aborted) throw new Error("AbortError");
            }
 
            const speakerName = line.slice(0, colonIdx).trim();
-           // Strip comments [ ... ] from the message sent to the API
            const rawMessage = line.slice(colonIdx + 1).trim();
            const message = rawMessage.replace(/\[.*?\]/g, '').trim();
 
@@ -91,15 +108,13 @@ export default function App() {
            const speaker = speakers.find(s => s.name.toLowerCase() === speakerName.toLowerCase());
            const voice = speaker ? speaker.voice : VoiceName.Kore;
 
-           // Apply Speaker Settings (Accent, Speed)
            const prompt = formatPromptWithSettings(message, speaker);
 
            const base64Audio = await previewSpeakerVoice(voice, prompt);
            const audioBytes = decodeBase64(base64Audio);
            speechBuffer = await decodeAudioData(audioBytes, audioCtx, 24000) as AudioBuffer;
            
-           const bufferToCache = speechBuffer;
-           setAudioCache(prev => ({ ...prev, [key]: bufferToCache }));
+           setAudioCache(prev => ({ ...prev, [key]: speechBuffer! }));
          }
 
          if (speechBuffer) {
@@ -111,7 +126,6 @@ export default function App() {
         throw new Error("No dialogue lines found to generate.");
       }
 
-      // Explicitly cast to AudioBuffer | null to resolve potential type inference issues
       const finalBuffer = concatenateAudioBuffers(buffers, audioCtx) as AudioBuffer | null;
 
       setGenerationState({
@@ -121,36 +135,37 @@ export default function App() {
       });
 
     } catch (error: any) {
-      console.error(error);
-      setGenerationState({
-        isGenerating: false,
-        error: error.message || "Something went wrong generating the audio.",
-        audioBuffer: null,
-      });
+      if (error.message === "AbortError") {
+        console.log("Generation aborted.");
+      } else {
+        console.error(error);
+        setGenerationState({
+          isGenerating: false,
+          error: error.message || "Something went wrong generating the audio.",
+          audioBuffer: null,
+        });
+      }
     } finally {
-      // CRITICAL: Close the context to free up hardware resources.
-      // Browsers limit the number of active AudioContexts (often to 6).
       if (audioCtx && audioCtx.state !== 'closed') {
         await audioCtx.close();
       }
+      abortControllerRef.current = null;
     }
   };
 
   const handleSaveProject = () => {
-    // Serialize audio cache (AudioBuffer -> Base64)
     const serializedCache: Record<string, string> = {};
     for (const [key, buffer] of Object.entries(audioCache)) {
       serializedCache[key] = audioBufferToBase64(buffer as AudioBuffer);
     }
 
-    // Serialize full audio result if it exists
     let serializedFullAudio = null;
     if (generationState.audioBuffer) {
       serializedFullAudio = audioBufferToBase64(generationState.audioBuffer);
     }
 
     const projectData = {
-      version: '1.0',
+      version: '1.5',
       timestamp: new Date().toISOString(),
       script,
       speakers,
@@ -173,7 +188,6 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Reset value to ensure the same file triggers change again if selected
     event.target.value = '';
 
     const reader = new FileReader();
@@ -186,7 +200,6 @@ export default function App() {
             setScript(data.script);
             setSpeakers(data.speakers);
             
-            // Rehydrate Audio Cache and Playback
             const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
             
             const newCache: Record<string, AudioBuffer> = {};
@@ -194,7 +207,6 @@ export default function App() {
               for (const [key, b64] of Object.entries(data.audioCache)) {
                 if (typeof b64 === 'string') {
                   const bytes = decodeBase64(b64);
-                  // Decoding is async
                   newCache[key] = await decodeAudioData(bytes, ctx, 24000);
                 }
               }
@@ -213,7 +225,6 @@ export default function App() {
                 audioBuffer: fullBuffer
             });
             
-            // Clean up temporary context
             ctx.close();
         } else {
             alert("Invalid project file structure.");
@@ -230,7 +241,6 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-200 p-4 md:p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-8">
         
-        {/* Header */}
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-800">
           <div>
             <h1 className="text-3xl font-bold text-white flex items-center gap-3">
@@ -243,12 +253,11 @@ export default function App() {
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
-            {/* Project Controls */}
             <div className="flex items-center bg-slate-900 p-1 rounded-lg border border-slate-800">
               <button 
                 onClick={handleSaveProject}
                 className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors"
-                title="Save Project to JSON (Including Audio)"
+                title="Save Project to JSON"
               >
                 <Save size={14} />
                 Save
@@ -271,45 +280,57 @@ export default function App() {
               accept=".json" 
             />
 
-            {/* Model Badge */}
-            <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-900 px-3 py-2 rounded-lg border border-slate-800">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                gemini-2.5-flash
+            <div className="flex flex-col items-end">
+              <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-900 px-3 py-2 rounded-lg border border-slate-800">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  gemini-2.5-flash
+              </div>
+              <span className="text-[9px] text-slate-600 mt-1 uppercase tracking-tighter">rev. {BUILD_REV}</span>
             </div>
           </div>
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
           
-          {/* Left Column: Configuration */}
           <div className="lg:col-span-1 space-y-6">
             <SpeakerManager speakers={speakers} setSpeakers={setSpeakers} />
             
-            {/* Action Area */}
             <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
               <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Actions</h3>
               
-              <button
-                onClick={handleGenerate}
-                disabled={generationState.isGenerating}
-                className={`w-full py-3 px-4 rounded-lg font-semibold text-white shadow-lg transition-all flex items-center justify-center gap-2
-                  ${generationState.isGenerating 
-                    ? 'bg-slate-700 cursor-wait' 
-                    : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 hover:scale-[1.02]'
-                  }`}
-              >
-                {generationState.isGenerating ? (
-                  <>
-                    <Loader2 className="animate-spin" size={20} />
-                    Assembling Audio...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={20} />
-                    Generate Full Audio
-                  </>
+              <div className="space-y-3">
+                <button
+                  onClick={handleGenerate}
+                  disabled={generationState.isGenerating}
+                  className={`w-full py-3 px-4 rounded-lg font-semibold text-white shadow-lg transition-all flex items-center justify-center gap-2
+                    ${generationState.isGenerating 
+                      ? 'bg-slate-700 cursor-wait' 
+                      : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 hover:scale-[1.02]'
+                    }`}
+                >
+                  {generationState.isGenerating ? (
+                    <>
+                      <Loader2 className="animate-spin" size={20} />
+                      Assembling Audio...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={20} />
+                      Generate Full Audio
+                    </>
+                  )}
+                </button>
+
+                {generationState.isGenerating && (
+                  <button
+                    onClick={handleAbort}
+                    className="w-full py-2 px-4 rounded-lg font-medium text-red-400 bg-red-900/20 border border-red-900/30 hover:bg-red-900/30 transition-all flex items-center justify-center gap-2"
+                  >
+                    <XCircle size={18} />
+                    Stop Generation
+                  </button>
                 )}
-              </button>
+              </div>
 
               {generationState.error && (
                 <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-2 text-red-200 text-sm">
@@ -319,16 +340,13 @@ export default function App() {
               )}
             </div>
 
-             {/* Audio Player (Shows only when buffer exists) */}
              {generationState.audioBuffer && (
                <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                  <AudioPlayer audioBuffer={generationState.audioBuffer} />
                </div>
              )}
-
           </div>
 
-          {/* Right Column: Script Editor */}
           <div className="lg:col-span-2 min-h-[500px]">
              <ScriptEditor 
                script={script} 
@@ -342,7 +360,7 @@ export default function App() {
         </main>
 
         <footer className="text-center text-slate-600 text-sm pt-8 pb-4">
-          Powered by Google Gemini 2.5 Flash • Web Audio API • React
+          Powered by Google Gemini 2.5 Flash • Web Audio API • React • Build {BUILD_REV}
         </footer>
       </div>
     </div>

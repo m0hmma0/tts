@@ -1,6 +1,7 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Speaker, VoiceName } from '../types';
-import { Plus, Trash2, User, Play, Loader2, Square, Globe, Gauge } from 'lucide-react';
+import { Plus, Trash2, User, Play, Loader2, Square, Globe, Gauge, MessageSquareText } from 'lucide-react';
 import { previewSpeakerVoice, formatPromptWithSettings } from '../services/geminiService';
 import { decodeBase64, decodeAudioData } from '../utils/audioUtils';
 
@@ -18,7 +19,6 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   useEffect(() => {
-    // Cleanup on unmount
     return () => {
       if (sourceRef.current) {
         try { sourceRef.current.stop(); } catch (e) {}
@@ -35,13 +35,13 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
       name: `Speaker ${speakers.length + 1}`,
       voice: VoiceName.Kore,
       accent: 'Neutral',
-      speed: 'Normal'
+      speed: 'Normal',
+      instructions: ''
     };
     setSpeakers([...speakers, newSpeaker]);
   };
 
   const removeSpeaker = (id: string) => {
-    // If removing the currently previewing speaker, stop audio
     if (previewState?.id === id) {
       if (sourceRef.current) {
         try { sourceRef.current.stop(); } catch (e) {}
@@ -58,7 +58,6 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
   };
 
   const handlePreview = async (speaker: Speaker) => {
-    // If currently playing this one, stop it
     if (previewState?.id === speaker.id) {
       if (sourceRef.current) {
         try { sourceRef.current.stop(); } catch (e) {}
@@ -67,7 +66,6 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
       return;
     }
 
-    // Stop any other playing audio
     if (sourceRef.current) {
       try { sourceRef.current.stop(); } catch (e) {}
     }
@@ -75,14 +73,11 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     setPreviewState({ id: speaker.id, status: 'loading' });
 
     try {
-      // 1. Fetch audio with applied settings
-      // We create a sample text that demonstrates the settings
-      const sampleText = `Hello! I am ${speaker.name}, speaking with a ${speaker.accent || 'neutral'} accent.`;
+      const sampleText = `Hello! I am ${speaker.name}. This is my unique voice profile.`;
       const prompt = formatPromptWithSettings(sampleText, speaker);
       
       const base64Audio = await previewSpeakerVoice(speaker.voice, prompt);
       
-      // 2. Prepare Context
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
           sampleRate: 24000
@@ -92,11 +87,9 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
         await audioContextRef.current.resume();
       }
 
-      // 3. Decode
       const audioBytes = decodeBase64(base64Audio);
       const buffer = await decodeAudioData(audioBytes, audioContextRef.current, 24000);
 
-      // 4. Play
       const source = audioContextRef.current.createBufferSource();
       source.buffer = buffer;
       source.connect(audioContextRef.current.destination);
@@ -116,8 +109,8 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
   };
 
   return (
-    <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
-      <div className="flex justify-between items-center mb-4">
+    <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 h-full overflow-y-auto max-h-[700px]">
+      <div className="flex justify-between items-center mb-4 sticky top-0 bg-slate-900/80 backdrop-blur-sm z-10 py-1 rounded">
         <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
           <User size={20} className="text-indigo-400" />
           Cast & Voices
@@ -131,9 +124,9 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
         </button>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         {speakers.length === 0 && (
-          <div className="text-slate-500 text-sm italic text-center py-4">
+          <div className="text-slate-500 text-sm italic text-center py-8 border-2 border-dashed border-slate-800 rounded-xl">
             No speakers defined. Add a speaker to assign voices.
           </div>
         )}
@@ -141,7 +134,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
         {speakers.map((speaker) => (
           <div
             key={speaker.id}
-            className="flex flex-col gap-3 bg-slate-900/50 p-4 rounded-lg border border-slate-700/50 group"
+            className="flex flex-col gap-3 bg-slate-900/50 p-4 rounded-lg border border-slate-700/50 group hover:border-indigo-500/30 transition-all shadow-sm"
           >
             {/* Row 1: Name and Voice */}
             <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
@@ -178,7 +171,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   
                   <button
                     onClick={() => handlePreview(speaker)}
-                    className={`shrink-0 w-[38px] flex items-center justify-center rounded border transition-all ${
+                    className={`shrink-0 w-[38px] h-[38px] flex items-center justify-center rounded border transition-all ${
                       previewState?.id === speaker.id
                         ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400'
                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/50'
@@ -198,6 +191,20 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* General Instructions Area */}
+            <div className="w-full">
+              <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 flex items-center gap-1">
+                <MessageSquareText size={10} /> Persona Instructions
+              </label>
+              <textarea
+                value={speaker.instructions || ''}
+                onChange={(e) => updateSpeaker(speaker.id, 'instructions', e.target.value)}
+                rows={2}
+                placeholder="e.g. Speaks with a raspy tone, very enthusiastic, often pauses between words..."
+                className="w-full bg-slate-800 text-slate-300 text-xs px-3 py-2 rounded border border-slate-700 focus:border-indigo-500 focus:outline-none transition-colors resize-none placeholder-slate-600"
+              />
             </div>
 
             {/* Row 2: Accent and Speed */}

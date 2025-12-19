@@ -1,3 +1,4 @@
+
 export enum VoiceName {
   Puck = 'Puck',
   Charon = 'Charon',
@@ -13,6 +14,7 @@ export interface Speaker {
   voice: VoiceName;
   accent?: string;
   speed?: string;
+  instructions?: string; // New field for general persona instructions
 }
 
 export interface GenerationState {
