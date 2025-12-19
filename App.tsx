@@ -13,15 +13,15 @@ import {
 import { Speaker, VoiceName, GenerationState } from './types';
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, Mic2 } from 'lucide-react';
 
-const INITIAL_SCRIPT = `[Scene: A dark room]
-Antoni: (whispering) Did you hear that?
-Bella: [Looks around nervously] (panicked) Hear what? I didn't hear anything!
-Antoni: (intensely) It sounded like... ElevenLabs is actually working.
-Bella: (relieved) Oh, thank goodness. I thought it was a ghost.`;
+const INITIAL_SCRIPT = `[Scene: A quiet morning]
+Adam: (softly) Have you seen my keys?
+Rachel: [Scanning the room] (distracted) Did you check the kitchen counter?
+Adam: (frustrated) Yes, three times!
+Rachel: (amused) They are literally in your hand, Adam.`;
 
 const INITIAL_SPEAKERS: Speaker[] = [
-  { id: '1', name: 'Antoni', voice: VoiceName.Antoni, accent: 'Neutral', speed: 'Normal' },
-  { id: '2', name: 'Bella', voice: VoiceName.Bella, accent: 'Neutral', speed: 'Normal' },
+  { id: '1', name: 'Adam', voice: VoiceName.Adam, accent: 'Neutral', speed: 'Normal' },
+  { id: '2', name: 'Rachel', voice: VoiceName.Rachel, accent: 'Neutral', speed: 'Normal' },
 ];
 
 export default function App() {
@@ -88,7 +88,7 @@ export default function App() {
         audioBuffer: null,
       });
     } finally {
-      // AudioContext is needed by AudioPlayer later, but we used a temporary one for decoding
+      // AudioContext handled in AudioPlayer
     }
   };
 
@@ -97,7 +97,7 @@ export default function App() {
     for (const [key, buffer] of Object.entries(audioCache)) {
       serializedCache[key] = audioBufferToBase64(buffer as AudioBuffer);
     }
-    const projectData = { version: '1.4-eleven', script, speakers, audioCache: serializedCache };
+    const projectData = { version: '1.5-stable', script, speakers, audioCache: serializedCache };
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

@@ -1,6 +1,6 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { FileText, Play, Loader2, Square, Download, Trash2, RefreshCcw } from 'lucide-react';
+import { FileText, Play, Loader2, Square, Download, RefreshCcw } from 'lucide-react';
 import { Speaker, VoiceName } from '../types';
 import { generateLineAudio } from '../services/elevenLabsService';
 import { decodeBase64, decodeAudioData, downloadAudioBufferAsWav } from '../utils/audioUtils';
@@ -125,6 +125,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
       </div>
       
       <div className="flex-grow relative overflow-hidden rounded-lg border border-slate-700 bg-slate-900 flex">
+        {/* Control Gutter */}
         <div className="w-16 bg-slate-900/80 border-r border-slate-800 flex flex-col pt-4 select-none z-20 overflow-hidden">
           {lines.map((line, i) => {
             const key = line.trim();
@@ -142,8 +143,8 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
                     </button>
                     {isCached && (
                       <div className="flex flex-col gap-0.5 opacity-0 group-hover/btn:opacity-100 transition-opacity">
-                        <button onClick={() => handleAction(line, 'download')} className="p-0.5 text-slate-500 hover:text-white" title="Download WAV"><Download size={8} /></button>
-                        <button onClick={() => handleAction(line, 'reset')} className="p-0.5 text-slate-500 hover:text-red-400" title="Reset Line"><RefreshCcw size={8} /></button>
+                        <button onClick={() => handleAction(line, 'download')} className="p-0.5 text-slate-500 hover:text-white"><Download size={8} /></button>
+                        <button onClick={() => handleAction(line, 'reset')} className="p-0.5 text-slate-500 hover:text-red-400"><RefreshCcw size={8} /></button>
                       </div>
                     )}
                   </>
@@ -153,32 +154,43 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
           })}
         </div>
 
+        {/* Sync Text Layers */}
         <div className="flex-1 relative overflow-hidden">
           <style>{`
             .script-layer {
-              font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-              font-size: 13px;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+              font-size: 14px;
               line-height: 28px;
               padding: 16px;
               margin: 0;
-              border: none;
+              border: 0;
               white-space: pre-wrap;
               word-wrap: break-word;
               width: 100%;
               height: 100%;
               box-sizing: border-box;
+              letter-spacing: normal;
+              text-rendering: optimizeLegibility;
+              -webkit-font-smoothing: antialiased;
             }
           `}</style>
           <div ref={backdropRef} className="script-layer absolute inset-0 pointer-events-none text-slate-200 overflow-hidden">
             {lines.map((l, i) => <div key={i} className="h-7 mb-1">{renderHighlightedLine(l)}</div>)}
           </div>
-          <textarea ref={textareaRef} value={script} onChange={(e) => setScript(e.target.value)} onScroll={handleScroll} spellCheck={false} className="script-layer absolute inset-0 bg-transparent text-transparent caret-white focus:outline-none z-10 resize-none overflow-y-auto" />
+          <textarea 
+            ref={textareaRef} 
+            value={script} 
+            onChange={(e) => setScript(e.target.value)} 
+            onScroll={handleScroll} 
+            spellCheck={false} 
+            className="script-layer absolute inset-0 bg-transparent text-transparent caret-white focus:outline-none z-10 resize-none overflow-y-auto" 
+          />
         </div>
       </div>
       
       <div className="mt-4 flex flex-wrap gap-4 text-[10px] text-slate-500 uppercase font-bold tracking-wider">
-        <div className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-slate-600"></span> [Scene / SFX]</div>
-        <div className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-pink-500"></span> (Emotion / Tone)</div>
+        <div className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-slate-600"></span> [Directions]</div>
+        <div className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-pink-500"></span> (Emotions)</div>
         <div className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-slate-300"></span> Dialogue</div>
       </div>
     </div>
