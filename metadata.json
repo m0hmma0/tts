@@ -1,5 +1,5 @@
 {
-  "name": "Audio Generation - Version 1.5 - Latest",
+  "name": "Audio Generation - Version 1.3 - Latest",
   "description": "A multi-speaker text-to-speech studio using Gemini 2.5 Flash for generating realistic dialogue with stage directions.",
   "requestFramePermissions": []
 }
