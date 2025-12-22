@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -10,7 +11,7 @@ import {
   audioBufferToBase64,
   estimateWordTimings
 } from './utils/audioUtils';
-import { Speaker, VoiceName, GenerationState, AudioCacheItem } from './types';
+import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from './types';
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
@@ -25,7 +26,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
 ];
 
-const BUILD_REV = "9b3d5e2"; 
+const BUILD_REV = "a1c4f9d"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
@@ -38,6 +39,7 @@ export default function App() {
     isGenerating: false,
     error: null,
     audioBuffer: null,
+    timings: null
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -56,7 +58,7 @@ export default function App() {
       return;
     }
 
-    setGenerationState({ isGenerating: true, error: null, audioBuffer: null });
+    setGenerationState({ isGenerating: true, error: null, audioBuffer: null, timings: null });
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
 
@@ -67,6 +69,8 @@ export default function App() {
       
       const lines = script.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const buffers: AudioBuffer[] = [];
+      const allTimings: WordTiming[] = [];
+      let currentDurationOffset = 0;
       
       for (let i = 0; i < lines.length; i++) {
          if (signal.aborted) throw new Error("AbortError");
@@ -116,6 +120,16 @@ export default function App() {
 
          if (cacheItem) {
            buffers.push(cacheItem.buffer);
+           
+           // Adjust timings for the full timeline
+           const offsetTimings = cacheItem.timings.map(t => ({
+             word: t.word,
+             start: parseFloat((t.start + currentDurationOffset).toFixed(3)),
+             end: parseFloat((t.end + currentDurationOffset).toFixed(3))
+           }));
+           allTimings.push(...offsetTimings);
+           
+           currentDurationOffset += cacheItem.buffer.duration;
          }
       }
 
@@ -129,6 +143,7 @@ export default function App() {
         isGenerating: false,
         error: null,
         audioBuffer: finalBuffer,
+        timings: allTimings
       });
 
     } catch (error: any) {
@@ -140,6 +155,7 @@ export default function App() {
           isGenerating: false,
           error: error.message || "Something went wrong generating the audio.",
           audioBuffer: null,
+          timings: null
         });
       }
     } finally {
@@ -166,12 +182,13 @@ export default function App() {
     }
 
     const projectData = {
-      version: '1.6-timings',
+      version: '1.7-full-timings',
       timestamp: new Date().toISOString(),
       script,
       speakers,
       audioCache: serializedCache,
-      fullAudio: serializedFullAudio
+      fullAudio: serializedFullAudio,
+      fullTimings: generationState.timings // Save full timings
     };
     
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -232,7 +249,8 @@ export default function App() {
             setGenerationState({
                 isGenerating: false,
                 error: null,
-                audioBuffer: fullBuffer
+                audioBuffer: fullBuffer,
+                timings: data.fullTimings || null
             });
             
             ctx.close();
@@ -352,7 +370,10 @@ export default function App() {
 
              {generationState.audioBuffer && (
                <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                 <AudioPlayer audioBuffer={generationState.audioBuffer} />
+                 <AudioPlayer 
+                   audioBuffer={generationState.audioBuffer} 
+                   timings={generationState.timings}
+                 />
                </div>
              )}
           </div>

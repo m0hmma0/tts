@@ -1,12 +1,15 @@
+
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, RotateCcw, Download, Volume2 } from 'lucide-react';
+import { Play, Pause, RotateCcw, Download, Volume2, FileJson } from 'lucide-react';
 import { downloadAudioBufferAsWav } from '../utils/audioUtils';
+import { WordTiming } from '../types';
 
 interface AudioPlayerProps {
   audioBuffer: AudioBuffer | null;
+  timings?: WordTiming[] | null;
 }
 
-export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer }) => {
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -15,7 +18,6 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer }) => {
   const pauseTimeRef = useRef<number>(0);
   const animationFrameRef = useRef<number>(0);
   
-  // To support "resume" functionality with Web Audio API, we track offset
   const [playbackOffset, setPlaybackOffset] = useState(0);
 
   useEffect(() => {
@@ -60,8 +62,6 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer }) => {
 
     source.onended = () => {
       // This triggers when playback finishes naturally
-      // We need to check if it finished or was stopped manually to avoid state flicker
-      // But for simplicity, if progress is >= 100, we reset.
       const duration = audioBuffer.duration;
       const elapsed = ctx.currentTime - startTimeRef.current;
       if (elapsed >= duration) {
@@ -130,6 +130,19 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer }) => {
     }
   };
 
+  const handleDownloadJSON = () => {
+    if (!timings) return;
+    const blob = new Blob([JSON.stringify(timings, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = "gemini_studio_full_timings.json";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   if (!audioBuffer) return null;
 
   return (
@@ -144,19 +157,32 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer }) => {
             <div className="text-xs text-indigo-300">{audioBuffer.duration.toFixed(1)}s • 24kHz Mono</div>
           </div>
         </div>
-        <button 
-          onClick={handleDownload}
-          className="text-xs flex items-center gap-1 text-indigo-300 hover:text-white hover:bg-indigo-500/30 px-2 py-1 rounded transition-colors"
-        >
-          <Download size={14} />
-          WAV
-        </button>
+        
+        <div className="flex items-center gap-2">
+            {timings && (
+              <button 
+                onClick={handleDownloadJSON}
+                className="text-xs flex items-center gap-1 text-amber-300 hover:text-white hover:bg-amber-500/30 px-2 py-1 rounded transition-colors"
+                title="Download JSON Timings"
+              >
+                <FileJson size={14} />
+                JSON
+              </button>
+            )}
+            <button 
+              onClick={handleDownload}
+              className="text-xs flex items-center gap-1 text-indigo-300 hover:text-white hover:bg-indigo-500/30 px-2 py-1 rounded transition-colors"
+              title="Download WAV Audio"
+            >
+              <Download size={14} />
+              WAV
+            </button>
+        </div>
       </div>
 
       {/* Progress Bar */}
       <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden relative cursor-pointer" onClick={(e) => {
-          // Seeking could be implemented here by calculating click position vs width
-          // For MVP, keeping it simple
+          // Placeholder for seek functionality
       }}>
         <div 
           className="h-full bg-indigo-500 transition-all duration-100 ease-linear"

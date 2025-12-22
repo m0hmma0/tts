@@ -32,4 +32,5 @@ export interface GenerationState {
   isGenerating: boolean;
   error: string | null;
   audioBuffer: AudioBuffer | null;
+  timings: WordTiming[] | null;
 }
