@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { WordTiming } from '../types';
-import { X, MicVocal } from 'lucide-react';
+import { X, Mic } from 'lucide-react';
 
 interface KaraokeViewerProps {
   timings: WordTiming[];
@@ -37,7 +37,7 @@ export const KaraokeViewer: React.FC<KaraokeViewerProps> = ({ timings, currentTi
       
       <div className="text-center mb-10">
         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100 mb-4">
-          <MicVocal size={16} />
+          <Mic size={16} />
           <span className="text-xs font-bold uppercase tracking-wider">Sync Test Mode</span>
         </div>
         <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Timing Verification</h2>
