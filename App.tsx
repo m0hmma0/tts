@@ -26,7 +26,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
 ];
 
-const BUILD_REV = "a1c4fa0"; 
+const BUILD_REV = "v1.8-b001"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
@@ -313,7 +313,9 @@ export default function App() {
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                   gemini-2.5-flash
               </div>
-              <span className="text-[9px] text-slate-400 mt-1 uppercase tracking-tighter">rev. {BUILD_REV}</span>
+              <div className="mt-2 text-xs font-mono font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 tracking-wide">
+                BUILD: {BUILD_REV}
+              </div>
             </div>
           </div>
         </header>

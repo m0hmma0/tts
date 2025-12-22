@@ -234,6 +234,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
         <KaraokeViewer 
           timings={timings} 
           currentTime={currentTime} 
+          isPlaying={isPlaying}
+          onTogglePlay={handleTogglePlay}
           onClose={() => setShowKaraoke(false)} 
         />
       )}
