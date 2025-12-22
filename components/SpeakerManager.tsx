@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Speaker, VoiceName } from '../types';
 import { Plus, Trash2, User, Play, Loader2, Square, Globe, Gauge, MessageSquareText } from 'lucide-react';
@@ -109,10 +108,10 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
   };
 
   return (
-    <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 h-full overflow-y-auto max-h-[700px]">
-      <div className="flex justify-between items-center mb-4 sticky top-0 bg-slate-900/80 backdrop-blur-sm z-10 py-1 rounded">
-        <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-          <User size={20} className="text-indigo-400" />
+    <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm h-full overflow-y-auto max-h-[700px]">
+      <div className="flex justify-between items-center mb-4 sticky top-0 bg-white/95 backdrop-blur-sm z-10 py-1 rounded">
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+          <User size={20} className="text-indigo-600" />
           Cast & Voices
         </h2>
         <button
@@ -126,7 +125,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
 
       <div className="space-y-4">
         {speakers.length === 0 && (
-          <div className="text-slate-500 text-sm italic text-center py-8 border-2 border-dashed border-slate-800 rounded-xl">
+          <div className="text-slate-400 text-sm italic text-center py-8 border-2 border-dashed border-slate-200 rounded-xl">
             No speakers defined. Add a speaker to assign voices.
           </div>
         )}
@@ -134,7 +133,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
         {speakers.map((speaker) => (
           <div
             key={speaker.id}
-            className="flex flex-col gap-3 bg-slate-900/50 p-4 rounded-lg border border-slate-700/50 group hover:border-indigo-500/30 transition-all shadow-sm"
+            className="flex flex-col gap-3 bg-slate-50 p-4 rounded-lg border border-slate-200 group hover:border-indigo-500/30 transition-all shadow-sm"
           >
             {/* Row 1: Name and Voice */}
             <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
@@ -144,7 +143,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   type="text"
                   value={speaker.name}
                   onChange={(e) => updateSpeaker(speaker.id, 'name', e.target.value)}
-                  className="w-full bg-slate-800 text-slate-200 text-sm px-3 py-2 rounded border border-slate-700 focus:border-indigo-500 focus:outline-none transition-colors placeholder-slate-600"
+                  className="w-full bg-white text-slate-900 text-sm px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors placeholder-slate-400"
                   placeholder="e.g. Joe"
                 />
               </div>
@@ -156,7 +155,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                     <select
                       value={speaker.voice}
                       onChange={(e) => updateSpeaker(speaker.id, 'voice', e.target.value as VoiceName)}
-                      className="w-full appearance-none bg-slate-800 text-slate-200 text-sm px-3 py-2 rounded border border-slate-700 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
+                      className="w-full appearance-none bg-white text-slate-900 text-sm px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
                     >
                       {Object.values(VoiceName).map((v) => (
                         <option key={v} value={v}>
@@ -165,7 +164,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                       ))}
                     </select>
                     <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                      <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                      <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                     </div>
                   </div>
                   
@@ -173,8 +172,8 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                     onClick={() => handlePreview(speaker)}
                     className={`shrink-0 w-[38px] h-[38px] flex items-center justify-center rounded border transition-all ${
                       previewState?.id === speaker.id
-                        ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400'
-                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/50'
+                        ? 'bg-indigo-50 border-indigo-500 text-indigo-600'
+                        : 'bg-white border-slate-300 text-slate-400 hover:text-indigo-600 hover:border-indigo-500/50'
                     }`}
                     title="Preview Voice"
                     disabled={previewState !== null && previewState.id !== speaker.id && previewState.status === 'loading'}
@@ -203,12 +202,12 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                 onChange={(e) => updateSpeaker(speaker.id, 'instructions', e.target.value)}
                 rows={2}
                 placeholder="e.g. Speaks with a raspy tone, very enthusiastic, often pauses between words..."
-                className="w-full bg-slate-800 text-slate-300 text-xs px-3 py-2 rounded border border-slate-700 focus:border-indigo-500 focus:outline-none transition-colors resize-none placeholder-slate-600"
+                className="w-full bg-white text-slate-700 text-xs px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors resize-none placeholder-slate-400"
               />
             </div>
 
             {/* Row 2: Accent and Speed */}
-            <div className="flex flex-col sm:flex-row gap-3 items-end pt-2 border-t border-slate-800/50">
+            <div className="flex flex-col sm:flex-row gap-3 items-end pt-2 border-t border-slate-200">
                <div className="flex-1 w-full">
                 <label className="block text-[10px] uppercase text-slate-500 font-bold mb-1 flex items-center gap-1">
                   <Globe size={10} /> Accent
@@ -217,7 +216,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   <select
                     value={speaker.accent || 'Neutral'}
                     onChange={(e) => updateSpeaker(speaker.id, 'accent', e.target.value)}
-                    className="w-full appearance-none bg-slate-800 text-slate-300 text-xs px-2 py-1.5 rounded border border-slate-700 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
+                    className="w-full appearance-none bg-white text-slate-700 text-xs px-2 py-1.5 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
                   >
                     {ACCENTS.map((acc) => (
                       <option key={acc} value={acc}>{acc}</option>
@@ -237,7 +236,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   <select
                     value={speaker.speed || 'Normal'}
                     onChange={(e) => updateSpeaker(speaker.id, 'speed', e.target.value)}
-                    className="w-full appearance-none bg-slate-800 text-slate-300 text-xs px-2 py-1.5 rounded border border-slate-700 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
+                    className="w-full appearance-none bg-white text-slate-700 text-xs px-2 py-1.5 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
                   >
                     {SPEEDS.map((s) => (
                       <option key={s} value={s}>{s}</option>
@@ -251,7 +250,7 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
 
                <button
                 onClick={() => removeSpeaker(speaker.id)}
-                className="w-full sm:w-auto p-1.5 mt-2 sm:mt-0 text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded transition-all flex justify-center items-center"
+                className="w-full sm:w-auto p-1.5 mt-2 sm:mt-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-all flex justify-center items-center"
                 aria-label="Remove speaker"
                 title="Remove Speaker"
               >

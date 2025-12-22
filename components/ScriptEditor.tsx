@@ -1,4 +1,3 @@
-
 import React, { useRef, useState, useEffect } from 'react';
 import { FileText, Play, Loader2, Square, RefreshCcw, Download, FileJson } from 'lucide-react';
 import { Speaker, VoiceName, AudioCacheItem } from '../types';
@@ -100,10 +99,10 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
     const parts = text.split(regex);
     return parts.map((part, index) => {
       if (part.startsWith('(') && part.endsWith(')')) {
-        return <span key={index} className="text-amber-400 italic font-medium">{part}</span>;
+        return <span key={index} className="text-amber-600 italic font-medium">{part}</span>;
       }
       if (part.startsWith('[') && part.endsWith(']')) {
-        return <span key={index} className="text-slate-500 italic">{part}</span>;
+        return <span key={index} className="text-slate-400 italic">{part}</span>;
       }
       return <span key={index}>{part}</span>;
     });
@@ -242,10 +241,10 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
   const lines = script.split('\n');
 
   return (
-    <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 h-full flex flex-col">
+    <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm h-full flex flex-col">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-          <FileText size={20} className="text-indigo-400" />
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+          <FileText size={20} className="text-indigo-600" />
           Conversation Script
         </h2>
         
@@ -254,8 +253,8 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
           disabled={previewStatus === 'loading'}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all border ${
             previewStatus !== 'idle' && !playingKey 
-              ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400' 
-              : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-indigo-900/30 hover:border-indigo-500/50 hover:text-white'
+              ? 'bg-indigo-50 border-indigo-500 text-indigo-600' 
+              : 'bg-white border-slate-300 text-slate-500 hover:bg-indigo-50 hover:border-indigo-500/50 hover:text-indigo-700'
           }`}
         >
           {previewStatus === 'loading' ? (
@@ -269,7 +268,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
         </button>
       </div>
       
-      <div className="flex-grow relative overflow-hidden rounded-lg border border-slate-700 bg-slate-900 group focus-within:border-indigo-500 transition-colors">
+      <div className="flex-grow relative overflow-hidden rounded-lg border border-slate-200 bg-slate-50 group focus-within:border-indigo-500 transition-colors">
         
         <style>{`
           .script-typography {
@@ -281,7 +280,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
 
         <div 
           ref={backdropRef}
-          className="absolute inset-0 p-4 pl-20 script-typography whitespace-pre-wrap break-words pointer-events-none text-slate-200 overflow-hidden"
+          className="absolute inset-0 p-4 pl-20 script-typography whitespace-pre-wrap break-words pointer-events-none text-slate-800 overflow-hidden"
           aria-hidden="true"
         >
           {renderHighlightedText(script)}
@@ -294,7 +293,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
           onChange={(e) => setScript(e.target.value)}
           onScroll={handleScroll}
           spellCheck={false}
-          className="absolute inset-0 w-full h-full bg-transparent text-transparent p-4 pl-20 script-typography whitespace-pre-wrap break-words resize-none focus:outline-none caret-white placeholder:text-slate-600 selection:bg-indigo-500/30 selection:text-transparent z-10"
+          className="absolute inset-0 w-full h-full bg-transparent text-transparent p-4 pl-20 script-typography whitespace-pre-wrap break-words resize-none focus:outline-none caret-indigo-600 placeholder:text-slate-400 selection:bg-indigo-200 selection:text-transparent z-10"
           placeholder="Write your dialogue here..."
         />
 
@@ -320,8 +319,8 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
                             onClick={() => handleInlinePlay(key)}
                             className={`p-1 rounded-full pointer-events-auto transition-all ${
                               playingKey === key 
-                                ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/50' 
-                                : 'text-indigo-400 hover:bg-indigo-900/50 hover:text-indigo-300'
+                                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/50' 
+                                : 'text-indigo-500 hover:bg-indigo-100 hover:text-indigo-700'
                             }`}
                             title="Play cached preview"
                           >
@@ -331,7 +330,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
                           <button
                             onClick={() => handleRegenerateLine(key)}
                             disabled={regeneratingKey === key}
-                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-500 hover:text-indigo-400 hover:bg-slate-800`}
+                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-400 hover:text-indigo-600 hover:bg-slate-200`}
                             title="Regenerate"
                           >
                              {regeneratingKey === key ? <Loader2 size={10} className="animate-spin" /> : <RefreshCcw size={10} />}
@@ -339,7 +338,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
 
                           <button
                             onClick={() => handleDownloadLine(key, i)}
-                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-500 hover:text-emerald-400 hover:bg-slate-800`}
+                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-400 hover:text-emerald-600 hover:bg-slate-200`}
                             title="Download WAV"
                           >
                              <Download size={10} />
@@ -347,7 +346,7 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
 
                           <button
                             onClick={() => handleDownloadTimings(key, i)}
-                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-500 hover:text-amber-400 hover:bg-slate-800`}
+                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-400 hover:text-amber-600 hover:bg-slate-200`}
                             title="Download JSON Timings"
                           >
                              <FileJson size={10} />

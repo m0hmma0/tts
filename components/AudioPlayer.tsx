@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { Play, Pause, RotateCcw, Download, Volume2, FileJson, Eye } from 'lucide-react';
 import { downloadAudioBufferAsWav } from '../utils/audioUtils';
@@ -159,15 +158,15 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
 
   return (
     <>
-      <div className="w-full bg-indigo-900/30 border border-indigo-500/30 rounded-xl p-4 flex flex-col gap-4">
+      <div className="w-full bg-white border border-indigo-100 shadow-sm rounded-xl p-4 flex flex-col gap-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-500/20 rounded-full">
-              <Volume2 className="text-indigo-400" size={20} />
+            <div className="p-2 bg-indigo-50 rounded-full">
+              <Volume2 className="text-indigo-600" size={20} />
             </div>
             <div>
-              <div className="text-sm font-medium text-white">Generated Audio</div>
-              <div className="text-xs text-indigo-300">{audioBuffer.duration.toFixed(1)}s • 24kHz Mono</div>
+              <div className="text-sm font-medium text-slate-900">Generated Audio</div>
+              <div className="text-xs text-indigo-600">{audioBuffer.duration.toFixed(1)}s • 24kHz Mono</div>
             </div>
           </div>
           
@@ -176,7 +175,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
                 <>
                   <button 
                     onClick={() => setShowKaraoke(true)}
-                    className="text-xs flex items-center gap-1 text-sky-300 hover:text-white hover:bg-sky-500/30 px-2 py-1 rounded transition-colors"
+                    className="text-xs flex items-center gap-1 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors"
                     title="Test Sync (Karaoke Mode)"
                   >
                     <Eye size={14} />
@@ -184,7 +183,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
                   </button>
                   <button 
                     onClick={handleDownloadJSON}
-                    className="text-xs flex items-center gap-1 text-amber-300 hover:text-white hover:bg-amber-500/30 px-2 py-1 rounded transition-colors"
+                    className="text-xs flex items-center gap-1 text-slate-500 hover:text-amber-600 hover:bg-amber-50 px-2 py-1 rounded transition-colors"
                     title="Download JSON Timings"
                   >
                     <FileJson size={14} />
@@ -194,7 +193,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
               )}
               <button 
                 onClick={handleDownload}
-                className="text-xs flex items-center gap-1 text-indigo-300 hover:text-white hover:bg-indigo-500/30 px-2 py-1 rounded transition-colors"
+                className="text-xs flex items-center gap-1 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors"
                 title="Download WAV Audio"
               >
                 <Download size={14} />
@@ -204,11 +203,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
         </div>
 
         {/* Progress Bar */}
-        <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden relative cursor-pointer" onClick={(e) => {
+        <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden relative cursor-pointer" onClick={(e) => {
             // Placeholder for seek functionality
         }}>
           <div 
-            className="h-full bg-indigo-500 transition-all duration-100 ease-linear"
+            className="h-full bg-indigo-600 transition-all duration-100 ease-linear"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -216,7 +215,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
         <div className="flex justify-center gap-4">
           <button 
             onClick={stop}
-            className="p-3 text-slate-400 hover:text-white hover:bg-slate-700 rounded-full transition-all"
+            className="p-3 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-full transition-all"
             title="Stop & Reset"
           >
             <RotateCcw size={20} />
@@ -224,7 +223,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ audioBuffer, timings }
           
           <button 
             onClick={handleTogglePlay}
-            className="p-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full shadow-lg shadow-indigo-900/50 transition-all hover:scale-105 active:scale-95"
+            className="p-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full shadow-lg shadow-indigo-500/30 transition-all hover:scale-105 active:scale-95"
           >
             {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
           </button>

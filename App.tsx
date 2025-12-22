@@ -1,4 +1,3 @@
-
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -266,34 +265,34 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 p-4 md:p-8 font-sans">
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 font-sans transition-colors duration-300">
       <div className="max-w-6xl mx-auto space-y-8">
         
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-200">
           <div>
-            <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-              <span className="p-2 bg-indigo-600 rounded-lg shadow-lg shadow-indigo-900/50">
+            <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
+              <span className="p-2 bg-indigo-600 rounded-lg shadow-lg shadow-indigo-500/30">
                 <Sparkles className="text-white" size={24} />
               </span>
               Gemini TTS Studio
             </h1>
-            <p className="mt-2 text-slate-400">Generate realistic multi-speaker dialogue with stage directions.</p>
+            <p className="mt-2 text-slate-500">Generate realistic multi-speaker dialogue with stage directions.</p>
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center bg-slate-900 p-1 rounded-lg border border-slate-800">
+            <div className="flex items-center bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
               <button 
                 onClick={handleSaveProject}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors"
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors"
                 title="Save Project to JSON"
               >
                 <Save size={14} />
                 Save Project
               </button>
-              <div className="w-px h-4 bg-slate-800 mx-1"></div>
+              <div className="w-px h-4 bg-slate-200 mx-1"></div>
               <button 
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors"
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors"
                 title="Open Project JSON"
               >
                 <FolderOpen size={14} />
@@ -309,11 +308,11 @@ export default function App() {
             />
 
             <div className="flex flex-col items-end">
-              <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-900 px-3 py-2 rounded-lg border border-slate-800">
+              <div className="flex items-center gap-2 text-xs text-slate-500 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                   gemini-2.5-flash
               </div>
-              <span className="text-[9px] text-slate-600 mt-1 uppercase tracking-tighter">rev. {BUILD_REV}</span>
+              <span className="text-[9px] text-slate-400 mt-1 uppercase tracking-tighter">rev. {BUILD_REV}</span>
             </div>
           </div>
         </header>
@@ -323,8 +322,8 @@ export default function App() {
           <div className="lg:col-span-1 space-y-6">
             <SpeakerManager speakers={speakers} setSpeakers={setSpeakers} />
             
-            <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
-              <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Actions</h3>
+            <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm">
+              <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Actions</h3>
               
               <div className="space-y-3">
                 <button
@@ -332,8 +331,8 @@ export default function App() {
                   disabled={generationState.isGenerating}
                   className={`w-full py-3 px-4 rounded-lg font-semibold text-white shadow-lg transition-all flex items-center justify-center gap-2
                     ${generationState.isGenerating 
-                      ? 'bg-slate-700 cursor-wait' 
-                      : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 hover:scale-[1.02]'
+                      ? 'bg-slate-300 text-slate-500 cursor-wait' 
+                      : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 hover:scale-[1.02] shadow-indigo-500/20'
                     }`}
                 >
                   {generationState.isGenerating ? (
@@ -352,7 +351,7 @@ export default function App() {
                 {generationState.isGenerating && (
                   <button
                     onClick={handleAbort}
-                    className="w-full py-2 px-4 rounded-lg font-medium text-red-400 bg-red-900/20 border border-red-900/30 hover:bg-red-900/30 transition-all flex items-center justify-center gap-2"
+                    className="w-full py-2 px-4 rounded-lg font-medium text-red-600 bg-red-50 border border-red-100 hover:bg-red-100 transition-all flex items-center justify-center gap-2"
                   >
                     <XCircle size={18} />
                     Stop Generation
@@ -361,7 +360,7 @@ export default function App() {
               </div>
 
               {generationState.error && (
-                <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-2 text-red-200 text-sm">
+                <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-lg flex items-start gap-2 text-red-600 text-sm">
                   <AlertCircle size={16} className="mt-0.5 shrink-0" />
                   <p>{generationState.error}</p>
                 </div>
@@ -390,7 +389,7 @@ export default function App() {
 
         </main>
 
-        <footer className="text-center text-slate-600 text-sm pt-8 pb-4">
+        <footer className="text-center text-slate-400 text-sm pt-8 pb-4">
           Powered by Google Gemini 2.5 Flash • Web Audio API • React • Build {BUILD_REV}
         </footer>
       </div>
