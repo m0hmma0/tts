@@ -14,7 +14,18 @@ export interface Speaker {
   voice: VoiceName;
   accent?: string;
   speed?: string;
-  instructions?: string; // New field for general persona instructions
+  instructions?: string; 
+}
+
+export interface WordTiming {
+  word: string;
+  start: number;
+  end: number;
+}
+
+export interface AudioCacheItem {
+  buffer: AudioBuffer;
+  timings: WordTiming[];
 }
 
 export interface GenerationState {

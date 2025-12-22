@@ -1,15 +1,16 @@
+
 import React, { useRef, useState, useEffect } from 'react';
-import { FileText, Play, Loader2, Square, RefreshCcw, Download } from 'lucide-react';
-import { Speaker, VoiceName } from '../types';
+import { FileText, Play, Loader2, Square, RefreshCcw, Download, FileJson } from 'lucide-react';
+import { Speaker, VoiceName, AudioCacheItem } from '../types';
 import { previewSpeakerVoice, formatPromptWithSettings } from '../services/geminiService';
-import { decodeBase64, decodeAudioData, downloadAudioBufferAsWav } from '../utils/audioUtils';
+import { decodeBase64, decodeAudioData, downloadAudioBufferAsWav, estimateWordTimings } from '../utils/audioUtils';
 
 interface ScriptEditorProps {
   script: string;
   setScript: (script: string) => void;
   speakers: Speaker[];
-  audioCache: Record<string, AudioBuffer>;
-  setAudioCache: React.Dispatch<React.SetStateAction<Record<string, AudioBuffer>>>;
+  audioCache: Record<string, AudioCacheItem>;
+  setAudioCache: React.Dispatch<React.SetStateAction<Record<string, AudioCacheItem>>>;
 }
 
 export const ScriptEditor: React.FC<ScriptEditorProps> = ({ 
@@ -23,11 +24,8 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const interactionRef = useRef<HTMLDivElement>(null);
   
-  // Playback state
   const [previewStatus, setPreviewStatus] = useState<'idle' | 'loading' | 'playing'>('idle');
-  // Track which specific line key is currently playing (for the inline buttons)
   const [playingKey, setPlayingKey] = useState<string | null>(null);
-  // Track which specific line key is regenerating
   const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -97,18 +95,14 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
     }
   };
 
-  // Highlight logic for (...) and [...]
   const renderHighlightedText = (text: string) => {
-    // Regex to match (...) or [...]
     const regex = /(\([^)]+\)|\[[^\]]+\])/g;
     const parts = text.split(regex);
     return parts.map((part, index) => {
       if (part.startsWith('(') && part.endsWith(')')) {
-        // Stage Directions (Acting)
         return <span key={index} className="text-amber-400 italic font-medium">{part}</span>;
       }
       if (part.startsWith('[') && part.endsWith(']')) {
-        // Comments (Ignored)
         return <span key={index} className="text-slate-500 italic">{part}</span>;
       }
       return <span key={index}>{part}</span>;
@@ -118,14 +112,11 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
   const generatePreview = async (lineText: string) => {
     const key = lineText.trim();
     
-    // Parse "Speaker: Text"
     const colonIdx = key.indexOf(':');
     if (colonIdx === -1) return null;
 
     const speakerName = key.slice(0, colonIdx).trim();
     const rawMessage = key.slice(colonIdx + 1).trim();
-    
-    // Strip comments [ ... ] for generation
     const message = rawMessage.replace(/\[.*?\]/g, '').trim();
 
     if (!message) return null;
@@ -133,7 +124,6 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
     const speaker = speakers.find(s => s.name.toLowerCase() === speakerName.toLowerCase());
     const voice = speaker ? speaker.voice : VoiceName.Kore;
 
-    // Apply Speaker Settings (Accent, Speed)
     const prompt = formatPromptWithSettings(message, speaker);
 
     try {
@@ -142,8 +132,9 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
       const audioBytes = decodeBase64(base64Audio);
       const buffer = await decodeAudioData(audioBytes, ctx, 24000);
       
-      // Update cache
-      setAudioCache(prev => ({ ...prev, [key]: buffer }));
+      const timings = estimateWordTimings(message, buffer.duration);
+      
+      setAudioCache(prev => ({ ...prev, [key]: { buffer, timings } }));
       return buffer;
     } catch (err) {
       console.error("Generation failed", err);
@@ -174,19 +165,16 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
 
     setPreviewStatus('loading');
 
-    // Check cache first
     if (audioCache[key]) {
-      playBuffer(audioCache[key], key);
+      playBuffer(audioCache[key].buffer, key);
       return;
     }
 
-    // Generate if not cached
     const buffer = await generatePreview(line);
     if (buffer) {
       playBuffer(buffer, key);
     } else {
       setPreviewStatus('idle');
-      // No alert here, silent fail or maybe toast in future
     }
   };
 
@@ -195,25 +183,23 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
       stopPlayback();
     } else {
       if (audioCache[key]) {
-        playBuffer(audioCache[key], key);
+        playBuffer(audioCache[key].buffer, key);
       }
     }
   };
 
   const handleRegenerateLine = async (key: string) => {
-     // Remove from cache
      const newCache = { ...audioCache };
      delete newCache[key];
      setAudioCache(newCache);
      
      setRegeneratingKey(key);
-     await generatePreview(key); // This will re-add to cache
+     await generatePreview(key); 
      setRegeneratingKey(null);
   };
 
   const handleDownloadLine = (key: string, index: number) => {
     if (audioCache[key]) {
-        // Parse speaker for filename
         const colonIdx = key.indexOf(':');
         let speaker = "Speaker";
         if (colonIdx > -1) {
@@ -221,7 +207,35 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
         }
         const safeSpeaker = speaker.replace(/[^a-z0-9]/gi, '_');
         const filename = `line_${index + 1}_${safeSpeaker}.wav`;
-        downloadAudioBufferAsWav(audioCache[key], filename);
+        downloadAudioBufferAsWav(audioCache[key].buffer, filename);
+    }
+  };
+
+  const handleDownloadTimings = (key: string, index: number) => {
+    if (audioCache[key]) {
+        const colonIdx = key.indexOf(':');
+        let speaker = "Speaker";
+        if (colonIdx > -1) {
+            speaker = key.substring(0, colonIdx).trim();
+        }
+        const safeSpeaker = speaker.replace(/[^a-z0-9]/gi, '_');
+        
+        const data = {
+            id: `line_${index + 1}`,
+            speaker: speaker,
+            text: key.substring(colonIdx + 1).trim(),
+            timings: audioCache[key].timings
+        };
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `line_${index + 1}_${safeSpeaker}_timings.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     }
   };
 
@@ -239,11 +253,10 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
           onClick={handlePreviewLine}
           disabled={previewStatus === 'loading'}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all border ${
-            previewStatus !== 'idle' && !playingKey // Shows active state for the main button only if NOT playing from an inline button
+            previewStatus !== 'idle' && !playingKey 
               ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400' 
               : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-indigo-900/30 hover:border-indigo-500/50 hover:text-white'
           }`}
-          title="Preview the line currently under the cursor"
         >
           {previewStatus === 'loading' ? (
             <Loader2 size={14} className="animate-spin" />
@@ -258,16 +271,14 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
       
       <div className="flex-grow relative overflow-hidden rounded-lg border border-slate-700 bg-slate-900 group focus-within:border-indigo-500 transition-colors">
         
-        {/* Common typography class for alignment */}
         <style>{`
           .script-typography {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.875rem; /* text-sm */
-            line-height: 1.75; /* relaxed leading for breathing room */
+            font-size: 0.875rem; 
+            line-height: 1.75; 
           }
         `}</style>
 
-        {/* LAYER 1: Backdrop for Syntax Highlighting */}
         <div 
           ref={backdropRef}
           className="absolute inset-0 p-4 pl-20 script-typography whitespace-pre-wrap break-words pointer-events-none text-slate-200 overflow-hidden"
@@ -277,7 +288,6 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
           {script.endsWith('\n') && <br />}
         </div>
 
-        {/* LAYER 2: Textarea for Input */}
         <textarea
           ref={textareaRef}
           value={script}
@@ -285,17 +295,9 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({
           onScroll={handleScroll}
           spellCheck={false}
           className="absolute inset-0 w-full h-full bg-transparent text-transparent p-4 pl-20 script-typography whitespace-pre-wrap break-words resize-none focus:outline-none caret-white placeholder:text-slate-600 selection:bg-indigo-500/30 selection:text-transparent z-10"
-          placeholder={`Write your dialogue here...
-          
-Example:
-[Scene: Office, early morning]
-Joe: How's it going today Jane?
-Jane: [Sips coffee] Not too bad, how about you?
-[Note: Jane should sound tired]
-`}
+          placeholder="Write your dialogue here..."
         />
 
-        {/* LAYER 3: Interaction Layer for Inline Buttons */}
         <div 
           ref={interactionRef}
           className="absolute inset-0 p-4 pl-20 script-typography whitespace-pre-wrap break-words overflow-hidden pointer-events-none z-20"
@@ -303,16 +305,13 @@ Jane: [Sips coffee] Not too bad, how about you?
           {lines.map((line, i) => {
              const key = line.trim();
              const hasAudio = !!audioCache[key];
-             // Simple heuristic to check if line is valid dialogue to show controls
              const isDialogue = key.includes(':'); 
              const showControls = isDialogue && key.length > 5;
              
              return (
                <div key={i} className="relative w-full">
-                  {/* We render the line content transparently to force the container to match the height of wrapped text */}
                   <span className="opacity-0 select-none">{line || ' '}</span>
                   
-                  {/* Buttons positioned in the gutter to the left */}
                   {showControls && (
                     <div className="absolute -left-[4.5rem] top-0 flex items-center h-6 gap-1">
                       {hasAudio ? (
@@ -326,36 +325,35 @@ Jane: [Sips coffee] Not too bad, how about you?
                             }`}
                             title="Play cached preview"
                           >
-                            {playingKey === key ? (
-                              <Square size={10} fill="currentColor" />
-                            ) : (
-                              <Play size={10} fill="currentColor" />
-                            )}
+                            {playingKey === key ? <Square size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" />}
                           </button>
                           
                           <button
                             onClick={() => handleRegenerateLine(key)}
                             disabled={regeneratingKey === key}
                             className={`p-1 rounded-full pointer-events-auto transition-all text-slate-500 hover:text-indigo-400 hover:bg-slate-800`}
-                            title="Regenerate this line with current speaker settings"
+                            title="Regenerate"
                           >
-                             {regeneratingKey === key ? (
-                               <Loader2 size={10} className="animate-spin" />
-                             ) : (
-                               <RefreshCcw size={10} />
-                             )}
+                             {regeneratingKey === key ? <Loader2 size={10} className="animate-spin" /> : <RefreshCcw size={10} />}
                           </button>
 
                           <button
                             onClick={() => handleDownloadLine(key, i)}
                             className={`p-1 rounded-full pointer-events-auto transition-all text-slate-500 hover:text-emerald-400 hover:bg-slate-800`}
-                            title="Download this line as WAV"
+                            title="Download WAV"
                           >
                              <Download size={10} />
                           </button>
+
+                          <button
+                            onClick={() => handleDownloadTimings(key, i)}
+                            className={`p-1 rounded-full pointer-events-auto transition-all text-slate-500 hover:text-amber-400 hover:bg-slate-800`}
+                            title="Download JSON Timings"
+                          >
+                             <FileJson size={10} />
+                          </button>
                         </>
                       ) : (
-                         /* No buttons if no cache */
                          null
                       )}
                     </div>
@@ -363,11 +361,6 @@ Jane: [Sips coffee] Not too bad, how about you?
                </div>
              );
           })}
-        </div>
-        
-        <div className="absolute bottom-2 right-4 text-[10px] text-slate-500 pointer-events-none select-none bg-slate-900/90 px-2 py-1 rounded backdrop-blur-sm border border-slate-800/50 z-30 flex gap-3">
-          <span><span className="text-amber-400 italic">(...)</span> Stage Directions</span>
-          <span><span className="text-slate-500 italic">[...]</span> Comments (Ignored)</span>
         </div>
       </div>
     </div>

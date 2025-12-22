@@ -1,4 +1,3 @@
-
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -8,9 +7,10 @@ import {
   decodeBase64, 
   decodeAudioData, 
   concatenateAudioBuffers,
-  audioBufferToBase64
+  audioBufferToBase64,
+  estimateWordTimings
 } from './utils/audioUtils';
-import { Speaker, VoiceName, GenerationState } from './types';
+import { Speaker, VoiceName, GenerationState, AudioCacheItem } from './types';
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
@@ -25,15 +25,14 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
 ];
 
-// GitHub current commit number - simulated/mock for build reference
-const BUILD_REV = "8a2f4c1"; 
+const BUILD_REV = "9b3d5e2"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
   const [script, setScript] = useState(INITIAL_SCRIPT);
   
-  // Shared cache for audio lines (speech only)
-  const [audioCache, setAudioCache] = useState<Record<string, AudioBuffer>>({});
+  // Updated Cache stores buffer AND timings
+  const [audioCache, setAudioCache] = useState<Record<string, AudioCacheItem>>({});
 
   const [generationState, setGenerationState] = useState<GenerationState>({
     isGenerating: false,
@@ -69,31 +68,25 @@ export default function App() {
       const lines = script.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const buffers: AudioBuffer[] = [];
       
-      // Iterate and Collect Audio
       for (let i = 0; i < lines.length; i++) {
          if (signal.aborted) throw new Error("AbortError");
 
          const line = lines[i];
 
-         // IGNORE bracketed lines completely (Comments)
-         if (line.startsWith('[')) {
-           continue; 
-         }
+         if (line.startsWith('[')) continue; 
 
-         // Handle Dialogue
          const colonIdx = line.indexOf(':');
          if (colonIdx === -1) continue;
 
          const key = line;
-         let speechBuffer: AudioBuffer | null = null;
+         let cacheItem: AudioCacheItem | null = null;
          
          if (audioCache[key]) {
-           speechBuffer = audioCache[key];
+           cacheItem = audioCache[key];
          } else {
-           // Wait with check for abort
            if (i > 0) {
               await new Promise(resolve => {
-                const timeoutId = setTimeout(resolve, 2000);
+                const timeoutId = setTimeout(resolve, 1500); // Slight delay for rate limiting
                 signal.addEventListener('abort', () => clearTimeout(timeoutId));
               });
               if (signal.aborted) throw new Error("AbortError");
@@ -112,13 +105,17 @@ export default function App() {
 
            const base64Audio = await previewSpeakerVoice(voice, prompt);
            const audioBytes = decodeBase64(base64Audio);
-           speechBuffer = await decodeAudioData(audioBytes, audioCtx, 24000) as AudioBuffer;
+           const buffer = await decodeAudioData(audioBytes, audioCtx, 24000);
            
-           setAudioCache(prev => ({ ...prev, [key]: speechBuffer! }));
+           // Generate timings immediately upon creation
+           const timings = estimateWordTimings(message, buffer.duration);
+           
+           cacheItem = { buffer, timings };
+           setAudioCache(prev => ({ ...prev, [key]: cacheItem! }));
          }
 
-         if (speechBuffer) {
-           buffers.push(speechBuffer);
+         if (cacheItem) {
+           buffers.push(cacheItem.buffer);
          }
       }
 
@@ -126,7 +123,7 @@ export default function App() {
         throw new Error("No dialogue lines found to generate.");
       }
 
-      const finalBuffer = concatenateAudioBuffers(buffers, audioCtx) as AudioBuffer | null;
+      const finalBuffer = concatenateAudioBuffers(buffers, audioCtx);
 
       setGenerationState({
         isGenerating: false,
@@ -154,9 +151,13 @@ export default function App() {
   };
 
   const handleSaveProject = () => {
-    const serializedCache: Record<string, string> = {};
-    for (const [key, buffer] of Object.entries(audioCache)) {
-      serializedCache[key] = audioBufferToBase64(buffer as AudioBuffer);
+    const serializedCache: Record<string, any> = {};
+    for (const [key, val] of Object.entries(audioCache)) {
+      const item = val as AudioCacheItem;
+      serializedCache[key] = {
+        audio: audioBufferToBase64(item.buffer),
+        timings: item.timings // Save timings to JSON
+      };
     }
 
     let serializedFullAudio = null;
@@ -165,7 +166,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '1.5',
+      version: '1.6-timings',
       timestamp: new Date().toISOString(),
       script,
       speakers,
@@ -202,12 +203,21 @@ export default function App() {
             
             const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
             
-            const newCache: Record<string, AudioBuffer> = {};
+            const newCache: Record<string, AudioCacheItem> = {};
             if (data.audioCache) {
-              for (const [key, b64] of Object.entries(data.audioCache)) {
-                if (typeof b64 === 'string') {
-                  const bytes = decodeBase64(b64);
-                  newCache[key] = await decodeAudioData(bytes, ctx, 24000);
+              for (const [key, value] of Object.entries(data.audioCache)) {
+                // Backward compatibility check
+                if (typeof value === 'string') {
+                   // Old format (just base64)
+                   const bytes = decodeBase64(value);
+                   const buffer = await decodeAudioData(bytes, ctx, 24000);
+                   newCache[key] = { buffer, timings: [] };
+                } else {
+                   // New format { audio, timings }
+                   const v = value as { audio: string, timings: any[] };
+                   const bytes = decodeBase64(v.audio);
+                   const buffer = await decodeAudioData(bytes, ctx, 24000);
+                   newCache[key] = { buffer, timings: v.timings || [] };
                 }
               }
             }
@@ -260,7 +270,7 @@ export default function App() {
                 title="Save Project to JSON"
               >
                 <Save size={14} />
-                Save
+                Save Project
               </button>
               <div className="w-px h-4 bg-slate-800 mx-1"></div>
               <button 
