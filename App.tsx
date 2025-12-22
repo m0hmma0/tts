@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -25,7 +26,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
 ];
 
-const BUILD_REV = "a1c4f9d"; 
+const BUILD_REV = "a1c4f9f"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
