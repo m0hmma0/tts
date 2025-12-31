@@ -39,6 +39,19 @@ export async function decodeAudioData(
 }
 
 /**
+ * Creates a silent audio buffer of the specified duration.
+ */
+export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBuffer {
+  // Minimum duration to avoid glitching
+  const safeDuration = Math.max(0.001, duration);
+  const sampleRate = ctx.sampleRate;
+  const length = Math.ceil(safeDuration * sampleRate);
+  const buffer = ctx.createBuffer(1, length, sampleRate);
+  // Data is already zeros by default
+  return buffer;
+}
+
+/**
  * Encodes an AudioBuffer to a base64 string (16-bit PCM).
  */
 export function audioBufferToBase64(buffer: AudioBuffer): string {

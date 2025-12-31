@@ -9,10 +9,12 @@ import {
   decodeAudioData, 
   concatenateAudioBuffers,
   audioBufferToBase64,
-  estimateWordTimings
+  estimateWordTimings,
+  createSilentBuffer
 } from './utils/audioUtils';
+import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
 import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from './types';
-import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle } from 'lucide-react';
+import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
 Joe: How's it going today Jane?
@@ -26,7 +28,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
 ];
 
-const BUILD_REV = "v1.8-b001"; 
+const BUILD_REV = "v1.9-srt-dubbing"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
@@ -44,6 +46,7 @@ export default function App() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const srtInputRef = useRef<HTMLInputElement>(null);
 
   const handleAbort = () => {
     if (abortControllerRef.current) {
@@ -70,19 +73,32 @@ export default function App() {
       const lines = script.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const buffers: AudioBuffer[] = [];
       const allTimings: WordTiming[] = [];
-      let currentDurationOffset = 0;
+      let currentTimelineTime = 0; // The actual time cursor in the final generated audio
       
       for (let i = 0; i < lines.length; i++) {
          if (signal.aborted) throw new Error("AbortError");
 
          const line = lines[i];
 
-         if (line.startsWith('[')) continue; 
+         // Check for metadata/stage directions (standard brackets)
+         // BUT check if it's a timestamp tag [HH:MM:SS.mmm] first
+         const timestampMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+         let targetStartTime: number | null = null;
+         let contentLine = line;
 
-         const colonIdx = line.indexOf(':');
+         if (timestampMatch) {
+            targetStartTime = parseScriptTimestamp(timestampMatch[1]);
+            contentLine = timestampMatch[2]; // The rest of the line
+         } else if (line.startsWith('[')) {
+            // It's a stage direction or scene header, skip generation
+            continue; 
+         }
+
+         const colonIdx = contentLine.indexOf(':');
          if (colonIdx === -1) continue;
 
-         const key = line;
+         // Cache Key needs to be just the "Speaker: Content" part to allow timing adjustments without re-gen
+         const key = contentLine; 
          let cacheItem: AudioCacheItem | null = null;
          
          if (audioCache[key]) {
@@ -90,14 +106,14 @@ export default function App() {
          } else {
            if (i > 0) {
               await new Promise(resolve => {
-                const timeoutId = setTimeout(resolve, 1500); // Slight delay for rate limiting
+                const timeoutId = setTimeout(resolve, 1500); // Delay for rate limiting
                 signal.addEventListener('abort', () => clearTimeout(timeoutId));
               });
               if (signal.aborted) throw new Error("AbortError");
            }
 
-           const speakerName = line.slice(0, colonIdx).trim();
-           const rawMessage = line.slice(colonIdx + 1).trim();
+           const speakerName = contentLine.slice(0, colonIdx).trim();
+           const rawMessage = contentLine.slice(colonIdx + 1).trim();
            const message = rawMessage.replace(/\[.*?\]/g, '').trim();
 
            if (!message) continue;
@@ -119,17 +135,31 @@ export default function App() {
          }
 
          if (cacheItem) {
+           // Dubbing Logic: Sync Check
+           if (targetStartTime !== null) {
+              const silenceNeeded = targetStartTime - currentTimelineTime;
+              
+              if (silenceNeeded > 0.05) { // Add silence if gap is significant (>50ms)
+                 const silentBuffer = createSilentBuffer(audioCtx, silenceNeeded);
+                 buffers.push(silentBuffer);
+                 currentTimelineTime += silenceNeeded;
+              } 
+              // Note: If silenceNeeded is negative, it means previous audio ran long. 
+              // We currently just append immediately, effectively pushing the timeline forward.
+              // To enforce strict timing, we would need to trim the previous buffer, which is complex.
+           }
+
            buffers.push(cacheItem.buffer);
            
            // Adjust timings for the full timeline
            const offsetTimings = cacheItem.timings.map(t => ({
              word: t.word,
-             start: parseFloat((t.start + currentDurationOffset).toFixed(3)),
-             end: parseFloat((t.end + currentDurationOffset).toFixed(3))
+             start: parseFloat((t.start + currentTimelineTime).toFixed(3)),
+             end: parseFloat((t.end + currentTimelineTime).toFixed(3))
            }));
            allTimings.push(...offsetTimings);
            
-           currentDurationOffset += cacheItem.buffer.duration;
+           currentTimelineTime += cacheItem.buffer.duration;
          }
       }
 
@@ -164,6 +194,45 @@ export default function App() {
       }
       abortControllerRef.current = null;
     }
+  };
+
+  const handleImportSRT = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+       const content = e.target?.result as string;
+       const srtBlocks = parseSRT(content);
+       
+       if (srtBlocks.length === 0) {
+          alert("Could not parse SRT file or file is empty.");
+          return;
+       }
+
+       // Convert SRT blocks to script format
+       // We try to detect if the SRT text already contains a speaker "Name: text"
+       // If not, we assign a default speaker.
+       const defaultSpeaker = speakers[0]?.name || "Speaker";
+       
+       const scriptLines = srtBlocks.map(block => {
+          const timestamp = formatTimeForScript(block.startSeconds);
+          let text = block.text;
+          
+          // Heuristic: Does text start with "Name:"?
+          const hasSpeaker = /^[A-Za-z0-9_ ]+:/.test(text);
+          
+          if (!hasSpeaker) {
+             text = `${defaultSpeaker}: ${text}`;
+          }
+          
+          return `[${timestamp}] ${text}`;
+       });
+
+       setScript(scriptLines.join('\n'));
+    };
+    reader.readAsText(file);
   };
 
   const handleSaveProject = () => {
@@ -282,6 +351,22 @@ export default function App() {
           
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
+              <button 
+                onClick={() => srtInputRef.current?.click()}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors border-r border-slate-200 pr-4 mr-1"
+                title="Import SRT Subtitles"
+              >
+                <FileUp size={14} />
+                Import SRT
+              </button>
+              <input 
+                 type="file" 
+                 ref={srtInputRef} 
+                 onChange={handleImportSRT} 
+                 className="hidden" 
+                 accept=".srt" 
+              />
+
               <button 
                 onClick={handleSaveProject}
                 className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors"
