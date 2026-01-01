@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -24,13 +25,28 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v1.9.2-strict-sync"; 
+const BUILD_REV = "v2.0.0-batched-sync"; 
+
+// --- Batching Types ---
+interface ScriptLine {
+  originalText: string;
+  speakerName: string;
+  spokenText: string;
+  startTime: number;
+  endTime: number | null;
+}
+
+interface DubbingChunk {
+  speakerName: string;
+  lines: ScriptLine[];
+  startTime: number;
+  endTime: number; // Approximate based on last line
+}
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
   const [script, setScript] = useState(INITIAL_SCRIPT);
   
-  // Updated Cache stores buffer AND timings
   const [audioCache, setAudioCache] = useState<Record<string, AudioCacheItem>>({});
 
   const [generationState, setGenerationState] = useState<GenerationState>({
@@ -40,6 +56,8 @@ export default function App() {
     timings: null
   });
 
+  const [progressMsg, setProgressMsg] = useState<string>("");
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const srtInputRef = useRef<HTMLInputElement>(null);
@@ -48,7 +66,105 @@ export default function App() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       setGenerationState(prev => ({ ...prev, isGenerating: false, error: "Generation aborted by user." }));
+      setProgressMsg("");
     }
+  };
+
+  /**
+   * Helper to parse raw script into structured lines
+   */
+  const parseScriptLines = (rawScript: string): ScriptLine[] => {
+    const rawLines = rawScript.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const parsed: ScriptLine[] = [];
+
+    for (const line of rawLines) {
+      // Matches: [Start -> End] Speaker: Text  OR [Start] Speaker: Text
+      const rangeMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+      const simpleMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+      
+      let startTime = 0;
+      let endTime: number | null = null;
+      let content = line;
+
+      if (rangeMatch) {
+        startTime = parseScriptTimestamp(rangeMatch[1]) || 0;
+        endTime = parseScriptTimestamp(rangeMatch[2]);
+        content = rangeMatch[3];
+      } else if (simpleMatch) {
+        startTime = parseScriptTimestamp(simpleMatch[1]) || 0;
+        content = simpleMatch[2];
+      } else {
+        // Skip stage directions or lines without timestamps
+        continue;
+      }
+
+      const colonIdx = content.indexOf(':');
+      if (colonIdx === -1) continue;
+
+      const speakerName = content.slice(0, colonIdx).trim();
+      let spokenText = content.slice(colonIdx + 1).trim();
+      spokenText = spokenText.replace(/\[.*?\]/g, '').trim(); // Remove inline directions from text
+
+      if (!spokenText) continue;
+
+      parsed.push({
+        originalText: line,
+        speakerName,
+        spokenText,
+        startTime,
+        endTime
+      });
+    }
+    return parsed;
+  };
+
+  /**
+   * Batch lines into natural "Dubbing Chunks"
+   * Rules: Same speaker, gap < 600ms, total chunk duration < 15s
+   */
+  const createDubbingChunks = (lines: ScriptLine[]): DubbingChunk[] => {
+    if (lines.length === 0) return [];
+
+    const chunks: DubbingChunk[] = [];
+    let currentChunk: DubbingChunk | null = null;
+
+    for (const line of lines) {
+      if (!currentChunk) {
+        currentChunk = {
+          speakerName: line.speakerName,
+          lines: [line],
+          startTime: line.startTime,
+          endTime: line.endTime || (line.startTime + 3) // Fallback if no end time
+        };
+        continue;
+      }
+
+      const prevLine = currentChunk.lines[currentChunk.lines.length - 1];
+      const gap = line.startTime - (prevLine.endTime || prevLine.startTime);
+      const chunkDuration = (line.endTime || line.startTime) - currentChunk.startTime;
+
+      // Merge criteria
+      const isSameSpeaker = line.speakerName === currentChunk.speakerName;
+      const isTightGap = gap < 0.6; // 600ms
+      const isShortEnough = chunkDuration < 15.0; // Don't let chunks get too massive
+
+      if (isSameSpeaker && isTightGap && isShortEnough) {
+        currentChunk.lines.push(line);
+        currentChunk.endTime = line.endTime || (line.startTime + 3);
+      } else {
+        // Push current and start new
+        chunks.push(currentChunk);
+        currentChunk = {
+          speakerName: line.speakerName,
+          lines: [line],
+          startTime: line.startTime,
+          endTime: line.endTime || (line.startTime + 3)
+        };
+      }
+    }
+    if (currentChunk) chunks.push(currentChunk);
+
+    return chunks;
   };
 
   const handleGenerate = async () => {
@@ -58,6 +174,8 @@ export default function App() {
     }
 
     setGenerationState({ isGenerating: true, error: null, audioBuffer: null, timings: null });
+    setProgressMsg("Parsing script...");
+    
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
 
@@ -66,148 +184,73 @@ export default function App() {
     try {
       audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
       
-      const lines = script.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      const parsedLines = parseScriptLines(script);
+      if (parsedLines.length === 0) throw new Error("No valid dialogue lines found (check timestamps).");
+
+      const chunks = createDubbingChunks(parsedLines);
       const buffers: AudioBuffer[] = [];
       const allTimings: WordTiming[] = [];
-      let currentTimelineTime = 0; // The actual time cursor in the final generated audio
       
-      for (let i = 0; i < lines.length; i++) {
-         if (signal.aborted) throw new Error("AbortError");
+      let currentTimelineTime = 0;
 
-         const line = lines[i];
+      for (let i = 0; i < chunks.length; i++) {
+        if (signal.aborted) throw new Error("AbortError");
+        
+        const chunk = chunks[i];
+        setProgressMsg(`Generating chunk ${i + 1} of ${chunks.length}...`);
 
-         // Check for timestamp tag: supports [Start -> End] or [Start]
-         const rangeMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
-         const simpleMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
-         
-         let targetStartTime: number | null = null;
-         let targetEndTime: number | null = null;
-         let contentLine = line;
+        // 1. Calculate timing relative to timeline
+        const silenceNeeded = chunk.startTime - currentTimelineTime;
+        if (silenceNeeded > 0.05) {
+          buffers.push(createSilentBuffer(audioCtx, silenceNeeded));
+          currentTimelineTime += silenceNeeded;
+        }
 
-         if (rangeMatch) {
-            targetStartTime = parseScriptTimestamp(rangeMatch[1]);
-            targetEndTime = parseScriptTimestamp(rangeMatch[2]);
-            contentLine = rangeMatch[3];
-         } else if (simpleMatch) {
-            targetStartTime = parseScriptTimestamp(simpleMatch[1]);
-            contentLine = simpleMatch[2];
-         } else if (line.startsWith('[')) {
-            // It's a stage direction or scene header without a timestamp, skip generation
-            continue; 
-         }
+        // 2. Prepare Prompt
+        // Combine text naturally. Remove repeated names/directions for smoother reading.
+        const combinedText = chunk.lines.map(l => l.spokenText).join(" ");
+        const speaker = speakers.find(s => s.name.toLowerCase() === chunk.speakerName.toLowerCase());
+        const voice = speaker ? speaker.voice : VoiceName.Kore;
 
-         const colonIdx = contentLine.indexOf(':');
-         if (colonIdx === -1) continue;
+        // Use formatted prompt but applied to the *Batch*
+        const prompt = formatPromptWithSettings(combinedText, speaker);
 
-         // Cache Key needs to be just the "Speaker: Content" part
-         const key = contentLine; 
-         let cacheItem: AudioCacheItem | null = null;
-         
-         if (audioCache[key]) {
-           cacheItem = audioCache[key];
-         } else {
-           if (i > 0) {
-              await new Promise(resolve => {
-                const timeoutId = setTimeout(resolve, 1500); // Delay for rate limiting
-                signal.addEventListener('abort', () => clearTimeout(timeoutId));
-              });
-              if (signal.aborted) throw new Error("AbortError");
-           }
+        // 3. Call API (Rate Limited Internally)
+        const base64Audio = await previewSpeakerVoice(voice, prompt);
+        const audioBytes = decodeBase64(base64Audio);
+        const chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
 
-           const speakerName = contentLine.slice(0, colonIdx).trim();
-           const rawMessage = contentLine.slice(colonIdx + 1).trim();
-           const message = rawMessage.replace(/\[.*?\]/g, '').trim();
+        // 4. Fit to Duration (Dubbing Sync)
+        // Allowed duration is determined by the SRT bounds of the chunk
+        let finalChunkBuffer = chunkRawBuffer;
+        
+        // Duration window defined by SRT
+        const targetDuration = chunk.endTime - chunk.startTime;
 
-           if (!message) continue;
+        // If generated audio is significantly longer than the slot, compress it
+        // We give a little leeway (0.2s) before compressing to keep it natural
+        if (chunkRawBuffer.duration > (targetDuration + 0.2)) {
+           finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, targetDuration, audioCtx);
+        }
 
-           const speaker = speakers.find(s => s.name.toLowerCase() === speakerName.toLowerCase());
-           const voice = speaker ? speaker.voice : VoiceName.Kore;
+        // 5. Generate Timings (Estimate)
+        // We distribute timings across the *combined* text
+        const chunkTimings = estimateWordTimings(combinedText, finalChunkBuffer.duration);
+        const offsetTimings = chunkTimings.map(t => ({
+          word: t.word,
+          start: t.start + currentTimelineTime,
+          end: t.end + currentTimelineTime
+        }));
 
-           const prompt = formatPromptWithSettings(message, speaker);
-
-           const base64Audio = await previewSpeakerVoice(voice, prompt);
-           const audioBytes = decodeBase64(base64Audio);
-           const buffer = await decodeAudioData(audioBytes, audioCtx, 24000);
-           
-           // Generate timings immediately upon creation
-           const timings = estimateWordTimings(message, buffer.duration);
-           
-           cacheItem = { buffer, timings };
-           setAudioCache(prev => ({ ...prev, [key]: cacheItem! }));
-         }
-
-         if (cacheItem) {
-           let segmentBuffer = cacheItem.buffer;
-           let segmentTimings = cacheItem.timings;
-
-           // --- DUBBING SYNC LOGIC ---
-           if (targetStartTime !== null) {
-              // 1. Add silence if we are early (wait for start time)
-              const silenceNeeded = targetStartTime - currentTimelineTime;
-              
-              if (silenceNeeded > 0.05) { 
-                 const silentBuffer = createSilentBuffer(audioCtx, silenceNeeded);
-                 buffers.push(silentBuffer);
-                 currentTimelineTime += silenceNeeded;
-              }
-
-              // 2. Determine Maximum Allowed Duration for this segment
-              let allowedDuration: number | null = null;
-
-              if (targetEndTime !== null) {
-                  // Explicit end time provided (e.g., from SRT)
-                  // The segment must fit between current time (which should be targetStartTime) and targetEndTime
-                  allowedDuration = targetEndTime - currentTimelineTime;
-              } else {
-                  // Fallback: Look ahead to the NEXT timestamp to prevent overrun
-                  let nextTargetTime: number | null = null;
-                  for (let j = i + 1; j < lines.length; j++) {
-                     const nextMatch = lines[j].match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})/);
-                     if (nextMatch) {
-                        nextTargetTime = parseScriptTimestamp(nextMatch[1]);
-                        break;
-                     }
-                  }
-                  if (nextTargetTime !== null) {
-                      allowedDuration = nextTargetTime - currentTimelineTime;
-                  }
-              }
-
-              // 3. Compress if needed
-              if (allowedDuration !== null && allowedDuration > 0.1) {
-                 if (segmentBuffer.duration > allowedDuration) {
-                    // console.log(`Compressing line ${i} from ${segmentBuffer.duration.toFixed(3)}s to ${allowedDuration.toFixed(3)}s`);
-                    segmentBuffer = await fitAudioToMaxDuration(segmentBuffer, allowedDuration, audioCtx);
-                    
-                    // Scale timestamps to match new duration
-                    const ratio = allowedDuration / cacheItem.buffer.duration;
-                    segmentTimings = segmentTimings.map(t => ({
-                       word: t.word,
-                       start: t.start * ratio,
-                       end: t.end * ratio
-                    }));
-                 }
-              }
-           }
-
-           buffers.push(segmentBuffer);
-           
-           // Adjust timings for the full timeline
-           const offsetTimings = segmentTimings.map(t => ({
-             word: t.word,
-             start: parseFloat((t.start + currentTimelineTime).toFixed(3)),
-             end: parseFloat((t.end + currentTimelineTime).toFixed(3))
-           }));
-           allTimings.push(...offsetTimings);
-           
-           currentTimelineTime += segmentBuffer.duration;
-         }
+        buffers.push(finalChunkBuffer);
+        allTimings.push(...offsetTimings);
+        
+        currentTimelineTime += finalChunkBuffer.duration;
       }
 
-      if (buffers.length === 0) {
-        throw new Error("No dialogue lines found to generate.");
-      }
+      if (buffers.length === 0) throw new Error("No audio generated.");
 
+      setProgressMsg("Finalizing audio...");
       const finalBuffer = concatenateAudioBuffers(buffers, audioCtx);
 
       setGenerationState({
@@ -216,6 +259,7 @@ export default function App() {
         audioBuffer: finalBuffer,
         timings: allTimings
       });
+      setProgressMsg("");
 
     } catch (error: any) {
       if (error.message === "AbortError") {
@@ -224,7 +268,7 @@ export default function App() {
         console.error(error);
         setGenerationState({
           isGenerating: false,
-          error: error.message || "Something went wrong generating the audio.",
+          error: error.message || "Generation failed.",
           audioBuffer: null,
           timings: null
         });
@@ -234,6 +278,7 @@ export default function App() {
         await audioCtx.close();
       }
       abortControllerRef.current = null;
+      setProgressMsg("");
     }
   };
 
@@ -290,7 +335,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '1.9.2',
+      version: '2.0.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,
@@ -465,7 +510,7 @@ export default function App() {
                   {generationState.isGenerating ? (
                     <>
                       <Loader2 className="animate-spin" size={20} />
-                      Assembling Audio...
+                      Assembling...
                     </>
                   ) : (
                     <>
@@ -474,6 +519,12 @@ export default function App() {
                     </>
                   )}
                 </button>
+                
+                {progressMsg && (
+                    <div className="text-center text-xs text-slate-500 animate-pulse">
+                        {progressMsg}
+                    </div>
+                )}
 
                 {generationState.isGenerating && (
                   <button

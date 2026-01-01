@@ -4,23 +4,53 @@ import { Speaker } from "../types";
 
 // --- API Key Management ---
 
+// Parse the pool correctly as JSON, with fallback
 // @ts-ignore - injected by Vite
-const API_KEYS: string[] = process.env.API_KEY_POOL || [];
+const rawPool = process.env.API_KEY_POOL;
+let API_KEYS: string[] = [];
+try {
+  API_KEYS = typeof rawPool === 'string' ? JSON.parse(rawPool) : [];
+} catch (e) {
+  console.error("Failed to parse API_KEY_POOL", e);
+  API_KEYS = [];
+}
 
 let currentKeyIndex = 0;
 
 const getClient = (): GoogleGenAI => {
-  const key = API_KEYS[currentKeyIndex];
-  if (!key) {
-    throw new Error("No API Key available.");
+  if (API_KEYS.length === 0) {
+    throw new Error("No API Keys available in configuration.");
   }
+  const key = API_KEYS[currentKeyIndex];
   return new GoogleGenAI({ apiKey: key });
 };
 
 const rotateKey = () => {
   if (API_KEYS.length <= 1) return;
   currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+  console.log(`Rotated API Key to index ${currentKeyIndex}`);
 };
+
+// --- Rate Limiter ---
+
+class RateLimiter {
+  private lastCallTime: number = 0;
+  private minInterval: number = 7000; // 7 seconds between calls (approx 8.5 RPM)
+
+  async wait() {
+    const now = Date.now();
+    const timeSinceLast = now - this.lastCallTime;
+    
+    if (timeSinceLast < this.minInterval) {
+      const waitTime = this.minInterval - timeSinceLast;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    this.lastCallTime = Date.now();
+  }
+}
+
+const globalRateLimiter = new RateLimiter();
 
 // --- Helper Utilities ---
 
@@ -28,40 +58,53 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function executeWithRetryAndRotation<T>(
   operation: (ai: GoogleGenAI) => Promise<T>,
-  retries = 3,
-  delay = 1000
+  retries = 3
 ): Promise<T> {
+  // If we have multiple keys, we can try more aggressively. 
+  // If only 1 key, we must respect backoff strictly.
   const keysCount = Math.max(1, API_KEYS.length);
+  const maxAttempts = retries * keysCount; 
   
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    for (let k = 0; k < keysCount; k++) {
-      try {
-        const ai = getClient();
-        return await operation(ai);
-      } catch (error: any) {
-        const status = error?.status || error?.code;
-        const msg = error?.message || "";
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      // Enforce rate limit before every attempt
+      await globalRateLimiter.wait();
 
-        const isQuotaError = 
-          status === 429 || 
-          msg.includes("429") || 
-          msg.includes("quota") || 
-          msg.includes("resource_exhausted");
+      const ai = getClient();
+      return await operation(ai);
+    } catch (error: any) {
+      const status = error?.status || error?.code;
+      const msg = error?.message || "";
 
-        if (isQuotaError) {
+      console.warn(`API Attempt ${attempt + 1} failed: ${msg}`);
+
+      const isQuotaError = 
+        status === 429 || 
+        msg.includes("429") || 
+        msg.includes("quota") || 
+        msg.includes("resource_exhausted");
+
+      if (isQuotaError) {
+        if (API_KEYS.length > 1) {
           rotateKey();
+          // Short wait after rotation
+          await sleep(1000); 
+          continue;
+        } else {
+          // Exponential backoff if single key
+          const backoff = 7000 * Math.pow(2, attempt); 
+          console.log(`Quota hit (single key). Backing off for ${backoff}ms...`);
+          await sleep(backoff);
           continue;
         }
-
-        const isServerError = status === 503 || status === 500;
-        if (isServerError && attempt < retries) {
-           break;
-        }
-        throw error;
       }
-    }
-    if (attempt < retries) {
-      await sleep(delay * Math.pow(2, attempt));
+
+      const isServerError = status === 503 || status === 500;
+      if (isServerError && attempt < maxAttempts - 1) {
+         await sleep(2000);
+         continue;
+      }
+      throw error;
     }
   }
   throw new Error("Failed to generate content after exhausting retries and API keys.");
