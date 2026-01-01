@@ -4,22 +4,48 @@ import { Speaker } from "../types";
 
 // --- API Key Management ---
 
-// Parse the pool correctly as JSON, with fallback
 // @ts-ignore - injected by Vite
 const rawPool = process.env.API_KEY_POOL;
 let API_KEYS: string[] = [];
-try {
-  API_KEYS = typeof rawPool === 'string' ? JSON.parse(rawPool) : [];
-} catch (e) {
-  console.error("Failed to parse API_KEY_POOL", e);
-  API_KEYS = [];
+
+// 1. Try to parse the pool injected by Vite
+// Vite 'define' replaces the variable with the literal value. 
+// If it was defined as JSON.stringify(['a','b']), rawPool IS the array ['a','b'].
+if (Array.isArray(rawPool)) {
+  API_KEYS = rawPool;
+} else if (typeof rawPool === 'string') {
+  // If it somehow came through as a string (e.g. .env file directly), parse it
+  try {
+    const parsed = JSON.parse(rawPool);
+    if (Array.isArray(parsed)) {
+      API_KEYS = parsed;
+    }
+  } catch (e) {
+    // If parse fails, treat it as a single key string if it looks like one
+    if (rawPool.length > 10) API_KEYS = [rawPool];
+  }
 }
+
+// 2. Fallback to standard process.env.API_KEY if the pool is empty or failed
+if (API_KEYS.length === 0) {
+  if (process.env.API_KEY) {
+    API_KEYS.push(process.env.API_KEY);
+  }
+}
+
+// 3. Remove any empty strings/undefineds and deduplicate
+API_KEYS = [...new Set(API_KEYS.filter(k => !!k && k.trim().length > 0))];
+
+// Log for debugging (obfuscated)
+console.log(`Loaded ${API_KEYS.length} API keys.`);
 
 let currentKeyIndex = 0;
 
 const getClient = (): GoogleGenAI => {
   if (API_KEYS.length === 0) {
-    throw new Error("No API Keys available in configuration.");
+    console.error("API Key Error: API_KEYS array is empty.");
+    console.error("Raw Pool Type:", typeof rawPool);
+    throw new Error("No API Keys available. Please verify your .env file contains API_KEY or API_KEY_1...5 and redeploy.");
   }
   const key = API_KEYS[currentKeyIndex];
   return new GoogleGenAI({ apiKey: key });
