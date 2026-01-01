@@ -53,15 +53,16 @@ const rotateKey = () => {
 
 class RateLimiter {
   private lastCallTime: number = 0;
-  // Increase interval slightly to be safer
-  private minInterval: number = 8000; 
+  // Reduced to 4000ms (4s) to prevent "frozen" feeling, relying on 429 handling for backoff
+  private minInterval: number = 4000; 
 
-  async wait() {
+  async wait(onStatus?: (msg: string) => void) {
     const now = Date.now();
     const timeSinceLast = now - this.lastCallTime;
     
     if (timeSinceLast < this.minInterval) {
       const waitTime = this.minInterval - timeSinceLast;
+      if (onStatus) onStatus(`Throttling (${Math.ceil(waitTime/1000)}s)...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     this.lastCallTime = Date.now();
@@ -76,21 +77,27 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function executeWithRetryAndRotation<T>(
   operation: (ai: GoogleGenAI) => Promise<T>,
-  // Increase base retries to allow for long pauses
-  retries = 10
+  retries = 10,
+  onStatus?: (msg: string) => void
 ): Promise<T> {
   const keysCount = Math.max(1, API_KEYS.length);
-  // Total attempts is very high to support "infinite" waiting for quota reset
   const maxAttempts = retries * keysCount + 20; 
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      await globalRateLimiter.wait();
+      await globalRateLimiter.wait(onStatus);
+      if (onStatus) onStatus("Sending request...");
+      
       const ai = getClient();
       return await operation(ai);
     } catch (error: any) {
       const status = error?.status || error?.code;
       const msg = error?.message || "";
+
+      // 400 Bad Request (Invalid API Key, Invalid Prompt) should NOT be retried
+      if (status === 400 || msg.includes("INVALID_ARGUMENT") || msg.includes("API_KEY_INVALID")) {
+         throw new Error(`API Error (Non-retriable): ${msg}`);
+      }
 
       console.warn(`[Gemini Service] Attempt ${attempt + 1}/${maxAttempts} failed: ${msg}`);
 
@@ -102,15 +109,19 @@ async function executeWithRetryAndRotation<T>(
 
       if (isQuotaError) {
         if (API_KEYS.length > 1) {
+          if (onStatus) onStatus("Quota hit. Rotating key...");
           rotateKey();
           await sleep(2000); 
           continue;
         } else {
-          // If single key, we MUST wait for the quota to reset.
-          // Exponential backoff up to 30 seconds
+          // Exponential backoff
           const attemptWithinKey = attempt; 
-          const backoff = Math.min(30000, 10000 * Math.pow(1.5, attemptWithinKey)); 
-          console.log(`[Gemini Service] Quota limit (429). Waiting ${Math.round(backoff/1000)}s before retry...`);
+          const backoff = Math.min(30000, 5000 * Math.pow(1.5, attemptWithinKey)); 
+          const seconds = Math.round(backoff / 1000);
+          
+          if (onStatus) onStatus(`Quota limit hit. Cooling down for ${seconds}s...`);
+          console.log(`[Gemini Service] Quota limit (429). Waiting ${seconds}s before retry...`);
+          
           await sleep(backoff);
           continue;
         }
@@ -118,7 +129,8 @@ async function executeWithRetryAndRotation<T>(
 
       const isServerError = status === 503 || status === 500;
       if (isServerError && attempt < maxAttempts - 1) {
-         await sleep(5000); // 5s wait for server hiccups
+         if (onStatus) onStatus("Server error. Retrying in 5s...");
+         await sleep(5000);
          continue;
       }
       throw error;
@@ -196,7 +208,11 @@ export const generateSpeech = async (
   });
 };
 
-export const previewSpeakerVoice = async (voiceName: string, text?: string): Promise<string> => {
+export const previewSpeakerVoice = async (
+  voiceName: string, 
+  text?: string,
+  onStatusUpdate?: (msg: string) => void
+): Promise<string> => {
   return executeWithRetryAndRotation(async (ai) => {
     const promptText = text || `Hello! I am ${voiceName}, and I'm ready to read your script.`;
     
@@ -218,5 +234,5 @@ export const previewSpeakerVoice = async (voiceName: string, text?: string): Pro
       throw new Error("No audio data returned for preview.");
     }
     return base64Audio;
-  });
+  }, 10, onStatusUpdate);
 };

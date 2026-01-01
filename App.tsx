@@ -25,7 +25,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.1.0-resume-support"; 
+const BUILD_REV = "v2.1.1-status-feedback"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -250,20 +250,11 @@ export default function App() {
             // CACHE HIT - Skip API
             setProgressMsg(`Using cached chunk ${i + 1}/${chunks.length}...`);
             finalChunkBuffer = chunkCache[chunk.id].buffer;
-            
-            // We need to clone the timings to offset them correctly for this run
-            // (The stored timings are relative to 0 of the chunk, not the timeline)
             const cachedT = chunkCache[chunk.id].timings;
-            // The cached timings are already "relative to chunk start 0"
-            // We just need to offset them by currentTimelineTime later
             chunkTimings = cachedT;
-            
-            // Short delay to allow UI to update even if everything is cached
             await new Promise(r => setTimeout(r, 10)); 
         } else {
             // CACHE MISS - Call API
-            setProgressMsg(`Generating chunk ${i + 1}/${chunks.length}...`);
-            
             const combinedText = chunk.lines.map(l => l.spokenText).join(" ");
             const speaker = speakers.find(s => s.name.toLowerCase() === chunk.speakerName.toLowerCase());
             const voice = speaker ? speaker.voice : VoiceName.Kore;
@@ -272,7 +263,10 @@ export default function App() {
 
             let base64Audio: string;
             try {
-              base64Audio = await previewSpeakerVoice(voice, prompt);
+              // Pass a callback to update status during the call
+              base64Audio = await previewSpeakerVoice(voice, prompt, (status) => {
+                 setProgressMsg(`Chunk ${i+1}: ${status}`);
+              });
             } catch (apiErr: any) {
                console.error("API Error on chunk", i, apiErr);
                throw new Error(`Failed to generate chunk ${i+1}: ${apiErr.message}`);
