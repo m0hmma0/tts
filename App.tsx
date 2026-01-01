@@ -10,25 +10,22 @@ import {
   concatenateAudioBuffers,
   audioBufferToBase64,
   estimateWordTimings,
-  createSilentBuffer
+  createSilentBuffer,
+  fitAudioToMaxDuration
 } from './utils/audioUtils';
 import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
 import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from './types';
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
-Joe: How's it going today Jane?
-Jane: (Cheerfully) Not too bad, how about you?
-[They clink mugs]
-Joe: Can't complain. Just testing out this new speech studio.
-Jane: (Whispering) It sounds incredible! [She looks amazed]`;
+Speaker: Hello! Import an SRT file to get started with synchronized dubbing.`;
 
+// Default speaker set to Puck, single entry
 const INITIAL_SPEAKERS: Speaker[] = [
-  { id: '1', name: 'Joe', voice: VoiceName.Kore, accent: 'Neutral', speed: 'Normal', instructions: 'Professional but relaxed male voice' },
-  { id: '2', name: 'Jane', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: 'Energetic and bright female voice' },
+  { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v1.9-srt-dubbing"; 
+const BUILD_REV = "v1.9.1-sync-fix"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
@@ -80,8 +77,7 @@ export default function App() {
 
          const line = lines[i];
 
-         // Check for metadata/stage directions (standard brackets)
-         // BUT check if it's a timestamp tag [HH:MM:SS.mmm] first
+         // Check for timestamp tag [HH:MM:SS.mmm]
          const timestampMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
          let targetStartTime: number | null = null;
          let contentLine = line;
@@ -90,14 +86,14 @@ export default function App() {
             targetStartTime = parseScriptTimestamp(timestampMatch[1]);
             contentLine = timestampMatch[2]; // The rest of the line
          } else if (line.startsWith('[')) {
-            // It's a stage direction or scene header, skip generation
+            // It's a stage direction or scene header without a specific timestamp, skip generation
             continue; 
          }
 
          const colonIdx = contentLine.indexOf(':');
          if (colonIdx === -1) continue;
 
-         // Cache Key needs to be just the "Speaker: Content" part to allow timing adjustments without re-gen
+         // Cache Key needs to be just the "Speaker: Content" part
          const key = contentLine; 
          let cacheItem: AudioCacheItem | null = null;
          
@@ -135,31 +131,61 @@ export default function App() {
          }
 
          if (cacheItem) {
-           // Dubbing Logic: Sync Check
+           let segmentBuffer = cacheItem.buffer;
+           let segmentTimings = cacheItem.timings;
+
+           // --- DUBBING SYNC LOGIC ---
            if (targetStartTime !== null) {
+              // 1. Add silence if we are early
               const silenceNeeded = targetStartTime - currentTimelineTime;
               
-              if (silenceNeeded > 0.05) { // Add silence if gap is significant (>50ms)
+              if (silenceNeeded > 0.05) { 
                  const silentBuffer = createSilentBuffer(audioCtx, silenceNeeded);
                  buffers.push(silentBuffer);
                  currentTimelineTime += silenceNeeded;
-              } 
-              // Note: If silenceNeeded is negative, it means previous audio ran long. 
-              // We currently just append immediately, effectively pushing the timeline forward.
-              // To enforce strict timing, we would need to trim the previous buffer, which is complex.
+              }
+
+              // 2. Strict Duration Check: Look ahead to the NEXT timestamp to prevent overrun
+              // Find the next line with a timestamp to define the available slot duration
+              let nextTargetTime: number | null = null;
+              for (let j = i + 1; j < lines.length; j++) {
+                 const nextMatch = lines[j].match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]/);
+                 if (nextMatch) {
+                    nextTargetTime = parseScriptTimestamp(nextMatch[1]);
+                    break;
+                 }
+              }
+
+              if (nextTargetTime !== null) {
+                 const allowedDuration = nextTargetTime - (targetStartTime > currentTimelineTime ? targetStartTime : currentTimelineTime);
+                 
+                 // If the generated audio is longer than the slot, compress it
+                 if (segmentBuffer.duration > allowedDuration) {
+                    // console.log(`Compressing line ${i} from ${segmentBuffer.duration.toFixed(3)}s to ${allowedDuration.toFixed(3)}s`);
+                    segmentBuffer = await fitAudioToMaxDuration(segmentBuffer, allowedDuration, audioCtx);
+                    
+                    // Scale timestamps to match new duration
+                    const ratio = allowedDuration / cacheItem.buffer.duration;
+                    segmentTimings = segmentTimings.map(t => ({
+                       word: t.word,
+                       start: t.start * ratio,
+                       end: t.end * ratio
+                    }));
+                 }
+              }
            }
 
-           buffers.push(cacheItem.buffer);
+           buffers.push(segmentBuffer);
            
            // Adjust timings for the full timeline
-           const offsetTimings = cacheItem.timings.map(t => ({
+           const offsetTimings = segmentTimings.map(t => ({
              word: t.word,
              start: parseFloat((t.start + currentTimelineTime).toFixed(3)),
              end: parseFloat((t.end + currentTimelineTime).toFixed(3))
            }));
            allTimings.push(...offsetTimings);
            
-           currentTimelineTime += cacheItem.buffer.duration;
+           currentTimelineTime += segmentBuffer.duration;
          }
       }
 
@@ -211,16 +237,12 @@ export default function App() {
           return;
        }
 
-       // Convert SRT blocks to script format
-       // We try to detect if the SRT text already contains a speaker "Name: text"
-       // If not, we assign a default speaker.
        const defaultSpeaker = speakers[0]?.name || "Speaker";
        
        const scriptLines = srtBlocks.map(block => {
           const timestamp = formatTimeForScript(block.startSeconds);
           let text = block.text;
           
-          // Heuristic: Does text start with "Name:"?
           const hasSpeaker = /^[A-Za-z0-9_ ]+:/.test(text);
           
           if (!hasSpeaker) {

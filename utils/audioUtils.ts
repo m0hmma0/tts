@@ -52,6 +52,37 @@ export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBu
 }
 
 /**
+ * Compresses (speeds up) an AudioBuffer to fit within a maximum duration using resampling.
+ * This increases pitch but ensures exact timing synchronization.
+ */
+export async function fitAudioToMaxDuration(
+  buffer: AudioBuffer,
+  maxDuration: number,
+  ctx: AudioContext
+): Promise<AudioBuffer> {
+  // If buffer fits or maxDuration is unreasonably small, return appropriately
+  if (buffer.duration <= maxDuration || maxDuration <= 0.1) return buffer;
+
+  const ratio = buffer.duration / maxDuration;
+  
+  // Use OfflineAudioContext to render the sped-up audio
+  const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(
+    buffer.numberOfChannels,
+    Math.ceil(maxDuration * ctx.sampleRate),
+    ctx.sampleRate
+  );
+
+  const source = offlineCtx.createBufferSource();
+  source.buffer = buffer;
+  // playbackRate > 1 means play faster (shorter duration)
+  source.playbackRate.value = ratio;
+  source.connect(offlineCtx.destination);
+  source.start(0);
+
+  return await offlineCtx.startRendering();
+}
+
+/**
  * Encodes an AudioBuffer to a base64 string (16-bit PCM).
  */
 export function audioBufferToBase64(buffer: AudioBuffer): string {
