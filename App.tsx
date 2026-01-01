@@ -1,4 +1,3 @@
-
 import React, { useState, useRef } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -18,14 +17,14 @@ import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from 
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
-Speaker: Hello! Import an SRT file to get started with synchronized dubbing.`;
+[00:00:01.000 -> 00:00:05.000] Speaker: Hello! Import an SRT file to get started with synchronized dubbing.`;
 
 // Default speaker set to Puck, single entry
 const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v1.9.1-sync-fix"; 
+const BUILD_REV = "v1.9.2-strict-sync"; 
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
@@ -77,16 +76,23 @@ export default function App() {
 
          const line = lines[i];
 
-         // Check for timestamp tag [HH:MM:SS.mmm]
-         const timestampMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+         // Check for timestamp tag: supports [Start -> End] or [Start]
+         const rangeMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+         const simpleMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+         
          let targetStartTime: number | null = null;
+         let targetEndTime: number | null = null;
          let contentLine = line;
 
-         if (timestampMatch) {
-            targetStartTime = parseScriptTimestamp(timestampMatch[1]);
-            contentLine = timestampMatch[2]; // The rest of the line
+         if (rangeMatch) {
+            targetStartTime = parseScriptTimestamp(rangeMatch[1]);
+            targetEndTime = parseScriptTimestamp(rangeMatch[2]);
+            contentLine = rangeMatch[3];
+         } else if (simpleMatch) {
+            targetStartTime = parseScriptTimestamp(simpleMatch[1]);
+            contentLine = simpleMatch[2];
          } else if (line.startsWith('[')) {
-            // It's a stage direction or scene header without a specific timestamp, skip generation
+            // It's a stage direction or scene header without a timestamp, skip generation
             continue; 
          }
 
@@ -136,7 +142,7 @@ export default function App() {
 
            // --- DUBBING SYNC LOGIC ---
            if (targetStartTime !== null) {
-              // 1. Add silence if we are early
+              // 1. Add silence if we are early (wait for start time)
               const silenceNeeded = targetStartTime - currentTimelineTime;
               
               if (silenceNeeded > 0.05) { 
@@ -145,21 +151,30 @@ export default function App() {
                  currentTimelineTime += silenceNeeded;
               }
 
-              // 2. Strict Duration Check: Look ahead to the NEXT timestamp to prevent overrun
-              // Find the next line with a timestamp to define the available slot duration
-              let nextTargetTime: number | null = null;
-              for (let j = i + 1; j < lines.length; j++) {
-                 const nextMatch = lines[j].match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]/);
-                 if (nextMatch) {
-                    nextTargetTime = parseScriptTimestamp(nextMatch[1]);
-                    break;
-                 }
+              // 2. Determine Maximum Allowed Duration for this segment
+              let allowedDuration: number | null = null;
+
+              if (targetEndTime !== null) {
+                  // Explicit end time provided (e.g., from SRT)
+                  // The segment must fit between current time (which should be targetStartTime) and targetEndTime
+                  allowedDuration = targetEndTime - currentTimelineTime;
+              } else {
+                  // Fallback: Look ahead to the NEXT timestamp to prevent overrun
+                  let nextTargetTime: number | null = null;
+                  for (let j = i + 1; j < lines.length; j++) {
+                     const nextMatch = lines[j].match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})/);
+                     if (nextMatch) {
+                        nextTargetTime = parseScriptTimestamp(nextMatch[1]);
+                        break;
+                     }
+                  }
+                  if (nextTargetTime !== null) {
+                      allowedDuration = nextTargetTime - currentTimelineTime;
+                  }
               }
 
-              if (nextTargetTime !== null) {
-                 const allowedDuration = nextTargetTime - (targetStartTime > currentTimelineTime ? targetStartTime : currentTimelineTime);
-                 
-                 // If the generated audio is longer than the slot, compress it
+              // 3. Compress if needed
+              if (allowedDuration !== null && allowedDuration > 0.1) {
                  if (segmentBuffer.duration > allowedDuration) {
                     // console.log(`Compressing line ${i} from ${segmentBuffer.duration.toFixed(3)}s to ${allowedDuration.toFixed(3)}s`);
                     segmentBuffer = await fitAudioToMaxDuration(segmentBuffer, allowedDuration, audioCtx);
@@ -240,7 +255,8 @@ export default function App() {
        const defaultSpeaker = speakers[0]?.name || "Speaker";
        
        const scriptLines = srtBlocks.map(block => {
-          const timestamp = formatTimeForScript(block.startSeconds);
+          const startTime = formatTimeForScript(block.startSeconds);
+          const endTime = formatTimeForScript(block.endSeconds);
           let text = block.text;
           
           const hasSpeaker = /^[A-Za-z0-9_ ]+:/.test(text);
@@ -249,7 +265,8 @@ export default function App() {
              text = `${defaultSpeaker}: ${text}`;
           }
           
-          return `[${timestamp}] ${text}`;
+          // Import with Start -> End format for strict timing
+          return `[${startTime} -> ${endTime}] ${text}`;
        });
 
        setScript(scriptLines.join('\n'));
@@ -273,7 +290,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '1.7-full-timings',
+      version: '1.9.2',
       timestamp: new Date().toISOString(),
       script,
       speakers,
