@@ -8,35 +8,28 @@ import { Speaker } from "../types";
 const rawPool = process.env.API_KEY_POOL;
 let API_KEYS: string[] = [];
 
-// 1. Try to parse the pool injected by Vite
 if (Array.isArray(rawPool)) {
   API_KEYS = rawPool;
 } else if (typeof rawPool === 'string') {
   try {
     const parsed = JSON.parse(rawPool);
-    if (Array.isArray(parsed)) {
-      API_KEYS = parsed;
-    }
+    if (Array.isArray(parsed)) API_KEYS = parsed;
   } catch (e) {
     if (rawPool.length > 10) API_KEYS = [rawPool];
   }
 }
 
-// 2. Fallback
 if (API_KEYS.length === 0 && process.env.API_KEY) {
   API_KEYS.push(process.env.API_KEY);
 }
 
-// 3. Deduplicate
 API_KEYS = [...new Set(API_KEYS.filter(k => !!k && k.trim().length > 0))];
 
 // --- DEBUG LOGGING ---
-// This will appear in the browser console so you can verify if keys are present
 if (API_KEYS.length === 0) {
     console.error("%c[Gemini Service] CRITICAL: No API Keys found!", "color: red; font-weight: bold; font-size: 14px;");
-    console.error("If running on Vercel, please REDEPLOY the project to bake in the new Environment Variables.");
 } else {
-    console.log(`%c[Gemini Service] Loaded ${API_KEYS.length} API key(s) from build configuration.`, "color: green; font-weight: bold;");
+    console.log(`%c[Gemini Service] Loaded ${API_KEYS.length} API key(s).`, "color: green; font-weight: bold;");
 }
 // ---------------------
 
@@ -60,7 +53,8 @@ const rotateKey = () => {
 
 class RateLimiter {
   private lastCallTime: number = 0;
-  private minInterval: number = 7000; // 7 seconds (Safe for ~10 RPM limit)
+  // Increase interval slightly to be safer
+  private minInterval: number = 8000; 
 
   async wait() {
     const now = Date.now();
@@ -68,10 +62,8 @@ class RateLimiter {
     
     if (timeSinceLast < this.minInterval) {
       const waitTime = this.minInterval - timeSinceLast;
-      // console.debug(`[RateLimiter] Throttling request for ${waitTime}ms...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
-    
     this.lastCallTime = Date.now();
   }
 }
@@ -84,10 +76,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function executeWithRetryAndRotation<T>(
   operation: (ai: GoogleGenAI) => Promise<T>,
-  retries = 3
+  // Increase base retries to allow for long pauses
+  retries = 10
 ): Promise<T> {
   const keysCount = Math.max(1, API_KEYS.length);
-  const maxAttempts = retries * keysCount; 
+  // Total attempts is very high to support "infinite" waiting for quota reset
+  const maxAttempts = retries * keysCount + 20; 
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
@@ -109,12 +103,14 @@ async function executeWithRetryAndRotation<T>(
       if (isQuotaError) {
         if (API_KEYS.length > 1) {
           rotateKey();
-          await sleep(1000); 
+          await sleep(2000); 
           continue;
         } else {
-          // Exponential backoff
-          const backoff = 7000 * Math.pow(2, attempt); 
-          console.log(`[Gemini Service] Quota limit. Backing off ${backoff}ms...`);
+          // If single key, we MUST wait for the quota to reset.
+          // Exponential backoff up to 30 seconds
+          const attemptWithinKey = attempt; 
+          const backoff = Math.min(30000, 10000 * Math.pow(1.5, attemptWithinKey)); 
+          console.log(`[Gemini Service] Quota limit (429). Waiting ${Math.round(backoff/1000)}s before retry...`);
           await sleep(backoff);
           continue;
         }
@@ -122,13 +118,13 @@ async function executeWithRetryAndRotation<T>(
 
       const isServerError = status === 503 || status === 500;
       if (isServerError && attempt < maxAttempts - 1) {
-         await sleep(2000);
+         await sleep(5000); // 5s wait for server hiccups
          continue;
       }
       throw error;
     }
   }
-  throw new Error("Failed to generate content after exhausting retries and API keys.");
+  throw new Error("Failed to generate content after exhausting all retries and API keys.");
 }
 
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {

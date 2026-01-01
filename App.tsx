@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
 import { AudioPlayer } from './components/AudioPlayer';
@@ -15,7 +15,7 @@ import {
 } from './utils/audioUtils';
 import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
 import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from './types';
-import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp, Layers } from 'lucide-react';
+import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp, Layers, Trash2 } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
 [00:00:01.000 -> 00:00:05.000] Speaker: Hello! Import an SRT file to get started with synchronized dubbing.`;
@@ -25,7 +25,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.0.1-batched-fix"; 
+const BUILD_REV = "v2.1.0-resume-support"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -37,17 +37,39 @@ interface ScriptLine {
 }
 
 interface DubbingChunk {
+  id: string; // Unique hash for caching
   speakerName: string;
   lines: ScriptLine[];
   startTime: number;
-  endTime: number; // Approximate based on last line
+  endTime: number;
+  textHash: string;
 }
+
+// Helper to generate a unique key for a chunk based on its content and timing target
+const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>): string => {
+    // We include text, speaker, and exact duration target. 
+    // If user changes timing, we must regenerate to fit new duration.
+    const content = chunk.speakerName + chunk.lines.map(l => l.spokenText).join('') + chunk.startTime.toFixed(3) + chunk.endTime.toFixed(3);
+    // Simple hash function
+    let hash = 0, i, chr;
+    if (content.length === 0) return hash.toString();
+    for (i = 0; i < content.length; i++) {
+      chr = content.charCodeAt(i);
+      hash = ((hash << 5) - hash) + chr;
+      hash |= 0; 
+    }
+    return "chk_" + hash.toString();
+};
 
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
   const [script, setScript] = useState(INITIAL_SCRIPT);
   
+  // Cache for single line previews
   const [audioCache, setAudioCache] = useState<Record<string, AudioCacheItem>>({});
+
+  // Cache for batch generation chunks (Persists across errors)
+  const [chunkCache, setChunkCache] = useState<Record<string, { buffer: AudioBuffer, timings: WordTiming[] }>>({});
 
   const [generationState, setGenerationState] = useState<GenerationState>({
     isGenerating: false,
@@ -57,6 +79,8 @@ export default function App() {
   });
 
   const [progressMsg, setProgressMsg] = useState<string>("");
+  const [completedChunksCount, setCompletedChunksCount] = useState<number>(0);
+  const [totalChunksCount, setTotalChunksCount] = useState<number>(0);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -65,8 +89,8 @@ export default function App() {
   const handleAbort = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
-      setGenerationState(prev => ({ ...prev, isGenerating: false, error: "Generation aborted by user." }));
-      setProgressMsg("");
+      setGenerationState(prev => ({ ...prev, isGenerating: false, error: "Generation paused by user. Click Resume to continue." }));
+      setProgressMsg("Paused");
     }
   };
 
@@ -78,7 +102,6 @@ export default function App() {
     const parsed: ScriptLine[] = [];
 
     for (const line of rawLines) {
-      // Matches: [Start -> End] Speaker: Text  OR [Start] Speaker: Text
       const rangeMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
       const simpleMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
       
@@ -94,7 +117,6 @@ export default function App() {
         startTime = parseScriptTimestamp(simpleMatch[1]) || 0;
         content = simpleMatch[2];
       } else {
-        // Skip stage directions or lines without timestamps
         continue;
       }
 
@@ -103,7 +125,7 @@ export default function App() {
 
       const speakerName = content.slice(0, colonIdx).trim();
       let spokenText = content.slice(colonIdx + 1).trim();
-      spokenText = spokenText.replace(/\[.*?\]/g, '').trim(); // Remove inline directions from text
+      spokenText = spokenText.replace(/\[.*?\]/g, '').trim(); 
 
       if (!spokenText) continue;
 
@@ -120,13 +142,12 @@ export default function App() {
 
   /**
    * Batch lines into natural "Dubbing Chunks"
-   * Rules: Same speaker, gap < 600ms, total chunk duration < 15s
    */
   const createDubbingChunks = (lines: ScriptLine[]): DubbingChunk[] => {
     if (lines.length === 0) return [];
 
-    const chunks: DubbingChunk[] = [];
-    let currentChunk: DubbingChunk | null = null;
+    const rawChunks: Omit<DubbingChunk, 'id'>[] = [];
+    let currentChunk: Omit<DubbingChunk, 'id'> | null = null;
 
     for (const line of lines) {
       if (!currentChunk) {
@@ -134,43 +155,49 @@ export default function App() {
           speakerName: line.speakerName,
           lines: [line],
           startTime: line.startTime,
-          endTime: line.endTime || (line.startTime + 3) 
+          endTime: line.endTime || (line.startTime + 3),
+          textHash: ""
         };
         continue;
       }
 
       const prevLine = currentChunk.lines[currentChunk.lines.length - 1];
-      
-      // FIX: Correctly calculate gap. If prevLine has no endTime, assume 2s duration for calculation.
       const prevEndTime = prevLine.endTime || (prevLine.startTime + 2.0);
       const gap = line.startTime - prevEndTime;
-
       const chunkDuration = (line.endTime || line.startTime) - currentChunk.startTime;
 
-      // Merge criteria
       const isSameSpeaker = line.speakerName === currentChunk.speakerName;
-      // Allow slight overlap (negative gap) or tight gap (< 0.6s)
       const isTightGap = gap < 0.6; 
-      const isShortEnough = chunkDuration < 15.0; // Keep reasonable chunk size for TTS stability
+      const isShortEnough = chunkDuration < 15.0; 
 
       if (isSameSpeaker && isTightGap && isShortEnough) {
         currentChunk.lines.push(line);
-        // Update chunk end time
         currentChunk.endTime = line.endTime || (line.startTime + 3);
       } else {
-        // Push current and start new
-        chunks.push(currentChunk);
+        rawChunks.push(currentChunk);
         currentChunk = {
           speakerName: line.speakerName,
           lines: [line],
           startTime: line.startTime,
-          endTime: line.endTime || (line.startTime + 3)
+          endTime: line.endTime || (line.startTime + 3),
+          textHash: ""
         };
       }
     }
-    if (currentChunk) chunks.push(currentChunk);
+    if (currentChunk) rawChunks.push(currentChunk);
 
-    return chunks;
+    // Assign IDs
+    return rawChunks.map(c => ({
+        ...c,
+        id: generateChunkHash(c)
+    }));
+  };
+
+  const handleClearCache = () => {
+    if (confirm("Are you sure? This will delete all generated chunks and you will have to regenerate everything from scratch.")) {
+        setChunkCache({});
+        setGenerationState(prev => ({ ...prev, audioBuffer: null, timings: null }));
+    }
   };
 
   const handleGenerate = async () => {
@@ -179,8 +206,8 @@ export default function App() {
       return;
     }
 
-    setGenerationState({ isGenerating: true, error: null, audioBuffer: null, timings: null });
-    setProgressMsg("Parsing script...");
+    setGenerationState(prev => ({ ...prev, isGenerating: true, error: null }));
+    setProgressMsg("Preparing...");
     
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
@@ -194,107 +221,132 @@ export default function App() {
       if (parsedLines.length === 0) throw new Error("No valid dialogue lines found (check timestamps).");
 
       const chunks = createDubbingChunks(parsedLines);
-      console.log(`Batched ${parsedLines.length} lines into ${chunks.length} generation chunks.`);
+      setTotalChunksCount(chunks.length);
       
-      const buffers: AudioBuffer[] = [];
-      const allTimings: WordTiming[] = [];
+      const orderedBuffers: AudioBuffer[] = [];
+      const orderedTimings: WordTiming[] = [];
       
       let currentTimelineTime = 0;
+      let newlyGeneratedCount = 0;
 
       for (let i = 0; i < chunks.length; i++) {
         if (signal.aborted) throw new Error("AbortError");
         
         const chunk = chunks[i];
-        setProgressMsg(`Generating chunk ${i + 1} of ${chunks.length} (${Math.round((i/chunks.length)*100)}%)...`);
-
-        // 1. Calculate timing relative to timeline
-        // If the chunk starts later than our current audio head, insert silence.
-        // If it starts earlier (overlap), we currently just continue (no mixing implemented, straightforward sequencing).
+        setCompletedChunksCount(i);
+        
+        // 1. Calculate Silence
         const silenceNeeded = chunk.startTime - currentTimelineTime;
         if (silenceNeeded > 0.05) {
-          buffers.push(createSilentBuffer(audioCtx, silenceNeeded));
+          orderedBuffers.push(createSilentBuffer(audioCtx, silenceNeeded));
           currentTimelineTime += silenceNeeded;
         }
 
-        // 2. Prepare Prompt
-        // Combine text naturally. 
-        const combinedText = chunk.lines.map(l => l.spokenText).join(" ");
-        const speaker = speakers.find(s => s.name.toLowerCase() === chunk.speakerName.toLowerCase());
-        const voice = speaker ? speaker.voice : VoiceName.Kore;
+        // 2. Check Cache
+        let finalChunkBuffer: AudioBuffer;
+        let chunkTimings: WordTiming[];
 
-        const prompt = formatPromptWithSettings(combinedText, speaker);
+        if (chunkCache[chunk.id]) {
+            // CACHE HIT - Skip API
+            setProgressMsg(`Using cached chunk ${i + 1}/${chunks.length}...`);
+            finalChunkBuffer = chunkCache[chunk.id].buffer;
+            
+            // We need to clone the timings to offset them correctly for this run
+            // (The stored timings are relative to 0 of the chunk, not the timeline)
+            const cachedT = chunkCache[chunk.id].timings;
+            // The cached timings are already "relative to chunk start 0"
+            // We just need to offset them by currentTimelineTime later
+            chunkTimings = cachedT;
+            
+            // Short delay to allow UI to update even if everything is cached
+            await new Promise(r => setTimeout(r, 10)); 
+        } else {
+            // CACHE MISS - Call API
+            setProgressMsg(`Generating chunk ${i + 1}/${chunks.length}...`);
+            
+            const combinedText = chunk.lines.map(l => l.spokenText).join(" ");
+            const speaker = speakers.find(s => s.name.toLowerCase() === chunk.speakerName.toLowerCase());
+            const voice = speaker ? speaker.voice : VoiceName.Kore;
 
-        // 3. Call API (Rate Limited Internally)
-        let base64Audio: string;
-        try {
-          base64Audio = await previewSpeakerVoice(voice, prompt);
-        } catch (apiErr: any) {
-           console.error("API Error on chunk", i, apiErr);
-           throw new Error(`Failed to generate audio for chunk ${i+1}: ${apiErr.message}`);
+            const prompt = formatPromptWithSettings(combinedText, speaker);
+
+            let base64Audio: string;
+            try {
+              base64Audio = await previewSpeakerVoice(voice, prompt);
+            } catch (apiErr: any) {
+               console.error("API Error on chunk", i, apiErr);
+               throw new Error(`Failed to generate chunk ${i+1}: ${apiErr.message}`);
+            }
+
+            const audioBytes = decodeBase64(base64Audio);
+            const chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
+
+            // Fit to Duration
+            finalChunkBuffer = chunkRawBuffer;
+            const targetDuration = chunk.endTime - chunk.startTime;
+            if (chunkRawBuffer.duration > (targetDuration + 0.5)) {
+               finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, targetDuration, audioCtx);
+            }
+
+            // Estimate Timings
+            chunkTimings = estimateWordTimings(combinedText, finalChunkBuffer.duration);
+
+            // SAVE TO CACHE
+            setChunkCache(prev => ({
+                ...prev,
+                [chunk.id]: { buffer: finalChunkBuffer, timings: chunkTimings }
+            }));
+            newlyGeneratedCount++;
         }
 
-        const audioBytes = decodeBase64(base64Audio);
-        const chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
-
-        // 4. Fit to Duration (Dubbing Sync)
-        let finalChunkBuffer = chunkRawBuffer;
-        
-        // Define the target window size based on SRT timestamps
-        const targetDuration = chunk.endTime - chunk.startTime;
-
-        // Only compress if the audio is significantly longer than the allocated slot
-        // We allow 0.5s overflow before compressing to keep it sounding natural
-        if (chunkRawBuffer.duration > (targetDuration + 0.5)) {
-           // Fit strictly to target duration
-           finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, targetDuration, audioCtx);
-        }
-
-        // 5. Generate Timings (Estimate)
-        // We distribute timings across the *combined* text
-        const chunkTimings = estimateWordTimings(combinedText, finalChunkBuffer.duration);
+        // 3. Append to Timeline
         const offsetTimings = chunkTimings.map(t => ({
           word: t.word,
           start: t.start + currentTimelineTime,
           end: t.end + currentTimelineTime
         }));
 
-        buffers.push(finalChunkBuffer);
-        allTimings.push(...offsetTimings);
+        orderedBuffers.push(finalChunkBuffer);
+        orderedTimings.push(...offsetTimings);
         
         currentTimelineTime += finalChunkBuffer.duration;
       }
 
-      if (buffers.length === 0) throw new Error("No audio generated.");
-
+      setCompletedChunksCount(chunks.length);
       setProgressMsg("Finalizing audio...");
-      const finalBuffer = concatenateAudioBuffers(buffers, audioCtx);
+      
+      if (orderedBuffers.length === 0) throw new Error("No audio generated.");
+
+      const finalBuffer = concatenateAudioBuffers(orderedBuffers, audioCtx);
 
       setGenerationState({
         isGenerating: false,
         error: null,
         audioBuffer: finalBuffer,
-        timings: allTimings
+        timings: orderedTimings
       });
-      setProgressMsg("");
+      setProgressMsg(newlyGeneratedCount === 0 ? "Loaded all from cache!" : "Generation Complete!");
 
     } catch (error: any) {
       if (error.message === "AbortError") {
-        console.log("Generation aborted.");
+        console.log("Generation paused.");
       } else {
         console.error(error);
-        setGenerationState({
+        setGenerationState(prev => ({
+          ...prev,
           isGenerating: false,
-          error: error.message || "Generation failed. Please check API keys and try again.",
-          audioBuffer: null,
-          timings: null
-        });
+          error: error.message || "Generation failed.",
+        }));
       }
     } finally {
       if (audioCtx && audioCtx.state !== 'closed') {
         await audioCtx.close();
       }
       abortControllerRef.current = null;
-      setProgressMsg("");
+      // Keep progress msg for a moment
+      setTimeout(() => { 
+        if (!generationState.error) setProgressMsg(""); 
+      }, 3000);
     }
   };
 
@@ -307,35 +359,26 @@ export default function App() {
     reader.onload = (e) => {
        const content = e.target?.result as string;
        const srtBlocks = parseSRT(content);
-       
        if (srtBlocks.length === 0) {
-          alert("Could not parse SRT file or file is empty.");
+          alert("Could not parse SRT.");
           return;
        }
-
        const defaultSpeaker = speakers[0]?.name || "Speaker";
-       
        const scriptLines = srtBlocks.map(block => {
           const startTime = formatTimeForScript(block.startSeconds);
           const endTime = formatTimeForScript(block.endSeconds);
           let text = block.text;
-          
           const hasSpeaker = /^[A-Za-z0-9_ ]+:/.test(text);
-          
-          if (!hasSpeaker) {
-             text = `${defaultSpeaker}: ${text}`;
-          }
-          
-          // Import with Start -> End format for strict timing
+          if (!hasSpeaker) text = `${defaultSpeaker}: ${text}`;
           return `[${startTime} -> ${endTime}] ${text}`;
        });
-
        setScript(scriptLines.join('\n'));
     };
     reader.readAsText(file);
   };
 
   const handleSaveProject = () => {
+    // Save both preview cache and chunk cache
     const serializedCache: Record<string, any> = {};
     for (const [key, val] of Object.entries(audioCache)) {
       const item = val as AudioCacheItem;
@@ -345,17 +388,27 @@ export default function App() {
       };
     }
 
+    const serializedChunkCache: Record<string, any> = {};
+    for (const [key, val] of Object.entries(chunkCache)) {
+        const item = val as { buffer: AudioBuffer, timings: WordTiming[] };
+        serializedChunkCache[key] = {
+            audio: audioBufferToBase64(item.buffer),
+            timings: item.timings
+        };
+    }
+
     let serializedFullAudio = null;
     if (generationState.audioBuffer) {
       serializedFullAudio = audioBufferToBase64(generationState.audioBuffer);
     }
 
     const projectData = {
-      version: '2.0.1',
+      version: '2.1.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,
       audioCache: serializedCache,
+      chunkCache: serializedChunkCache,
       fullAudio: serializedFullAudio,
       fullTimings: generationState.timings
     };
@@ -364,7 +417,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `gemini-tts-project-${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `gemini-tts-project.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -374,7 +427,6 @@ export default function App() {
   const handleLoadProject = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
     event.target.value = '';
 
     const reader = new FileReader();
@@ -389,23 +441,29 @@ export default function App() {
             
             const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
             
+            // Load Preview Cache
             const newCache: Record<string, AudioCacheItem> = {};
             if (data.audioCache) {
               for (const [key, value] of Object.entries(data.audioCache)) {
-                // Backward compatibility check
-                if (typeof value === 'string') {
-                   const bytes = decodeBase64(value);
-                   const buffer = await decodeAudioData(bytes, ctx, 24000);
-                   newCache[key] = { buffer, timings: [] };
-                } else {
-                   const v = value as { audio: string, timings: any[] };
-                   const bytes = decodeBase64(v.audio);
-                   const buffer = await decodeAudioData(bytes, ctx, 24000);
-                   newCache[key] = { buffer, timings: v.timings || [] };
-                }
+                 const v = value as { audio: string, timings: any[] };
+                 const bytes = decodeBase64(v.audio);
+                 const buffer = await decodeAudioData(bytes, ctx, 24000);
+                 newCache[key] = { buffer, timings: v.timings || [] };
               }
             }
             setAudioCache(newCache);
+
+            // Load Chunk Cache
+            const newChunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[] }> = {};
+            if (data.chunkCache) {
+                for (const [key, value] of Object.entries(data.chunkCache)) {
+                    const v = value as { audio: string, timings: any[] };
+                    const bytes = decodeBase64(v.audio);
+                    const buffer = await decodeAudioData(bytes, ctx, 24000);
+                    newChunkCache[key] = { buffer, timings: v.timings || [] };
+                 }
+            }
+            setChunkCache(newChunkCache);
 
             let fullBuffer = null;
             if (data.fullAudio && typeof data.fullAudio === 'string') {
@@ -432,6 +490,8 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  const hasCache = Object.keys(chunkCache).length > 0;
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 font-sans transition-colors duration-300">
       <div className="max-w-6xl mx-auto space-y-8">
@@ -448,48 +508,21 @@ export default function App() {
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
-              <button 
-                onClick={() => srtInputRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors border-r border-slate-200 pr-4 mr-1"
-                title="Import SRT Subtitles"
-              >
-                <FileUp size={14} />
-                Import SRT
+             <div className="flex items-center bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
+              <button onClick={() => srtInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors border-r border-slate-200 pr-4 mr-1">
+                <FileUp size={14} /> Import SRT
               </button>
-              <input 
-                 type="file" 
-                 ref={srtInputRef} 
-                 onChange={handleImportSRT} 
-                 className="hidden" 
-                 accept=".srt" 
-              />
+              <input type="file" ref={srtInputRef} onChange={handleImportSRT} className="hidden" accept=".srt" />
 
-              <button 
-                onClick={handleSaveProject}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors"
-                title="Save Project to JSON"
-              >
-                <Save size={14} />
-                Save Project
+              <button onClick={handleSaveProject} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors">
+                <Save size={14} /> Save Project
               </button>
               <div className="w-px h-4 bg-slate-200 mx-1"></div>
-              <button 
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors"
-                title="Open Project JSON"
-              >
-                <FolderOpen size={14} />
-                Open
+              <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors">
+                <FolderOpen size={14} /> Open
               </button>
             </div>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              onChange={handleLoadProject} 
-              className="hidden" 
-              accept=".json" 
-            />
+            <input type="file" ref={fileInputRef} onChange={handleLoadProject} className="hidden" accept=".json" />
 
             <div className="flex flex-col items-end">
               <div className="flex items-center gap-2 text-xs text-slate-500 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm">
@@ -524,19 +557,40 @@ export default function App() {
                   {generationState.isGenerating ? (
                     <>
                       <Loader2 className="animate-spin" size={20} />
-                      Processing...
+                      {hasCache ? "Resuming..." : "Processing..."}
                     </>
                   ) : (
                     <>
                       <Layers size={20} />
-                      Generate Batch Audio
+                      {hasCache ? "Resume Generation" : "Generate Batch Audio"}
                     </>
                   )}
                 </button>
                 
-                {progressMsg && (
-                    <div className="text-center text-xs text-slate-500 animate-pulse font-mono">
-                        {progressMsg}
+                {hasCache && !generationState.isGenerating && (
+                    <button 
+                        onClick={handleClearCache}
+                        className="w-full py-2 px-4 rounded-lg font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 transition-all flex items-center justify-center gap-2 text-xs border border-transparent hover:border-red-100"
+                    >
+                        <Trash2 size={14} /> Clear Cached Chunks
+                    </button>
+                )}
+
+                {(progressMsg || completedChunksCount > 0) && (
+                    <div className="text-center space-y-2">
+                        <div className="flex justify-between text-xs text-slate-500 font-medium">
+                            <span>Progress</span>
+                            <span>{completedChunksCount} / {totalChunksCount}</span>
+                        </div>
+                        <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                             <div 
+                                className="h-full bg-indigo-500 transition-all duration-300"
+                                style={{ width: `${totalChunksCount > 0 ? (completedChunksCount / totalChunksCount) * 100 : 0}%` }}
+                             ></div>
+                        </div>
+                        <div className="text-xs text-slate-500 font-mono h-4">
+                            {progressMsg}
+                        </div>
                     </div>
                 )}
 
@@ -546,7 +600,7 @@ export default function App() {
                     className="w-full py-2 px-4 rounded-lg font-medium text-red-600 bg-red-50 border border-red-100 hover:bg-red-100 transition-all flex items-center justify-center gap-2"
                   >
                     <XCircle size={18} />
-                    Stop Generation
+                    Pause Generation
                   </button>
                 )}
               </div>
