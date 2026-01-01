@@ -8,6 +8,7 @@ import { generateOpenAISpeech } from './services/openaiService';
 import { 
   decodeBase64, 
   decodeAudioData, 
+  decodeCompressedAudioData,
   concatenateAudioBuffers,
   audioBufferToBase64,
   estimateWordTimings,
@@ -26,7 +27,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.3.0-openai-support"; 
+const BUILD_REV = "v2.3.1-openai-fix"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -312,7 +313,14 @@ export default function App() {
             }
 
             const audioBytes = decodeBase64(base64Audio);
-            const chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
+            
+            // Decode Logic based on provider
+            let chunkRawBuffer: AudioBuffer;
+            if (provider === 'openai') {
+                chunkRawBuffer = await decodeCompressedAudioData(audioBytes, audioCtx);
+            } else {
+                chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
+            }
 
             // Fit to Duration
             finalChunkBuffer = chunkRawBuffer;
@@ -481,6 +489,8 @@ export default function App() {
               for (const [key, value] of Object.entries(data.audioCache)) {
                  const v = value as { audio: string, timings: any[] };
                  const bytes = decodeBase64(v.audio);
+                 // LOAD LOGIC: Project files always store audio as PCM-encoded base64 via audioBufferToBase64
+                 // So we always use decodeAudioData for loading, regardless of provider
                  const buffer = await decodeAudioData(bytes, ctx, 24000);
                  newCache[key] = { buffer, timings: v.timings || [] };
               }

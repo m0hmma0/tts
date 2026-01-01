@@ -39,6 +39,19 @@ export async function decodeAudioData(
 }
 
 /**
+ * Decodes compressed audio data (MP3, AAC, etc.) using the browser's native decoder.
+ * Used for OpenAI TTS responses.
+ */
+export async function decodeCompressedAudioData(
+  data: Uint8Array,
+  ctx: AudioContext
+): Promise<AudioBuffer> {
+  // decodeAudioData detaches the buffer, so we slice a copy to be safe
+  const bufferCopy = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  return await ctx.decodeAudioData(bufferCopy);
+}
+
+/**
  * Creates a silent audio buffer of the specified duration.
  */
 export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBuffer {
@@ -191,19 +204,16 @@ export function concatenateAudioBuffers(
  * This is a heuristic method to avoid STT API calls.
  */
 export function estimateWordTimings(text: string, duration: number): WordTiming[] {
-  // Clean text of basic punctuation for word splitting, but keep it for display if needed? 
-  // We'll split by spaces and match duration density.
+  // Clean text of basic punctuation for word splitting
   const words = text.trim().split(/\s+/);
   if (words.length === 0) return [];
 
   // Calculate "character density weight"
-  // We assume spoken duration correlates with character length (approximate)
   const totalChars = words.reduce((acc, w) => acc + w.length, 0);
   
   let currentTime = 0;
   return words.map(word => {
     // Distribute duration proportionally
-    // Add a small bias for word boundaries/pauses if we wanted, but linear is a good baseline
     const weight = word.length / totalChars;
     const wordDuration = duration * weight;
     

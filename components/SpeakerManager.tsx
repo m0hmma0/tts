@@ -4,7 +4,7 @@ import { Speaker, VoiceName, TTSProvider } from '../types';
 import { Plus, Trash2, User, Play, Loader2, Square, Globe, Gauge, MessageSquareText, Settings, Key } from 'lucide-react';
 import { previewSpeakerVoice, formatPromptWithSettings } from '../services/geminiService';
 import { generateOpenAISpeech } from '../services/openaiService';
-import { decodeBase64, decodeAudioData } from '../utils/audioUtils';
+import { decodeBase64, decodeAudioData, decodeCompressedAudioData } from '../utils/audioUtils';
 
 interface SpeakerManagerProps {
   speakers: Speaker[];
@@ -123,7 +123,13 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({
       }
 
       const audioBytes = decodeBase64(base64Audio);
-      const buffer = await decodeAudioData(audioBytes, audioContextRef.current, 24000);
+      let buffer: AudioBuffer;
+
+      if (provider === 'openai') {
+         buffer = await decodeCompressedAudioData(audioBytes, audioContextRef.current);
+      } else {
+         buffer = await decodeAudioData(audioBytes, audioContextRef.current, 24000);
+      }
 
       const source = audioContextRef.current.createBufferSource();
       source.buffer = buffer;
