@@ -25,7 +25,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.1.1-status-feedback"; 
+const BUILD_REV = "v2.2.0-immediate-stop"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -89,6 +89,8 @@ export default function App() {
   const handleAbort = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+      // Explicitly set paused state here. 
+      // The generation loop catch block will see the AbortError and should NOT overwrite this message.
       setGenerationState(prev => ({ ...prev, isGenerating: false, error: "Generation paused by user. Click Resume to continue." }));
       setProgressMsg("Paused");
     }
@@ -209,8 +211,10 @@ export default function App() {
     setGenerationState(prev => ({ ...prev, isGenerating: true, error: null }));
     setProgressMsg("Preparing...");
     
-    abortControllerRef.current = new AbortController();
-    const signal = abortControllerRef.current.signal;
+    // Create a new controller for THIS generation run
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const signal = controller.signal;
 
     let audioCtx: AudioContext | null = null;
 
@@ -230,7 +234,8 @@ export default function App() {
       let newlyGeneratedCount = 0;
 
       for (let i = 0; i < chunks.length; i++) {
-        if (signal.aborted) throw new Error("AbortError");
+        // Critical: Check abort at start of loop iteration
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         
         const chunk = chunks[i];
         setCompletedChunksCount(i);
@@ -252,6 +257,7 @@ export default function App() {
             finalChunkBuffer = chunkCache[chunk.id].buffer;
             const cachedT = chunkCache[chunk.id].timings;
             chunkTimings = cachedT;
+            // Allow UI update
             await new Promise(r => setTimeout(r, 10)); 
         } else {
             // CACHE MISS - Call API
@@ -263,11 +269,14 @@ export default function App() {
 
             let base64Audio: string;
             try {
-              // Pass a callback to update status during the call
+              // Pass signal and callback
               base64Audio = await previewSpeakerVoice(voice, prompt, (status) => {
                  setProgressMsg(`Chunk ${i+1}: ${status}`);
-              });
+              }, signal);
             } catch (apiErr: any) {
+               // If aborted inside service, it rethrows AbortError. Catch it here and rethrow to break loop.
+               if (apiErr.name === "AbortError") throw apiErr;
+
                console.error("API Error on chunk", i, apiErr);
                throw new Error(`Failed to generate chunk ${i+1}: ${apiErr.message}`);
             }
@@ -322,8 +331,10 @@ export default function App() {
       setProgressMsg(newlyGeneratedCount === 0 ? "Loaded all from cache!" : "Generation Complete!");
 
     } catch (error: any) {
-      if (error.message === "AbortError") {
-        console.log("Generation paused.");
+      if (error.name === "AbortError" || error.message === "AbortError") {
+        console.log("Generation loop terminated via AbortSignal.");
+        // We do NOT reset state here because handleAbort() sets the UI to "Paused".
+        // We just exit cleanly.
       } else {
         console.error(error);
         setGenerationState(prev => ({
@@ -337,7 +348,8 @@ export default function App() {
         await audioCtx.close();
       }
       abortControllerRef.current = null;
-      // Keep progress msg for a moment
+      
+      // Clean up success message
       setTimeout(() => { 
         if (!generationState.error) setProgressMsg(""); 
       }, 3000);
@@ -397,7 +409,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.1.0',
+      version: '2.2.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,

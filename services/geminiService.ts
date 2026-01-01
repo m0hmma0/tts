@@ -53,17 +53,18 @@ const rotateKey = () => {
 
 class RateLimiter {
   private lastCallTime: number = 0;
-  // Reduced to 4000ms (4s) to prevent "frozen" feeling, relying on 429 handling for backoff
   private minInterval: number = 4000; 
 
-  async wait(onStatus?: (msg: string) => void) {
+  async wait(signal?: AbortSignal, onStatus?: (msg: string) => void) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
     const now = Date.now();
     const timeSinceLast = now - this.lastCallTime;
     
     if (timeSinceLast < this.minInterval) {
       const waitTime = this.minInterval - timeSinceLast;
       if (onStatus) onStatus(`Throttling (${Math.ceil(waitTime/1000)}s)...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      await sleep(waitTime, signal);
     }
     this.lastCallTime = Date.now();
   }
@@ -73,28 +74,56 @@ const globalRateLimiter = new RateLimiter();
 
 // --- Helper Utilities ---
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Abort-aware sleep function
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+        return reject(new DOMException("Aborted", "AbortError"));
+    }
+    const timer = setTimeout(() => {
+        resolve();
+        signal?.removeEventListener('abort', onAbort);
+    }, ms);
+
+    const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+    };
+
+    signal?.addEventListener('abort', onAbort);
+});
 
 async function executeWithRetryAndRotation<T>(
   operation: (ai: GoogleGenAI) => Promise<T>,
   retries = 10,
-  onStatus?: (msg: string) => void
+  onStatus?: (msg: string) => void,
+  signal?: AbortSignal
 ): Promise<T> {
   const keysCount = Math.max(1, API_KEYS.length);
   const maxAttempts = retries * keysCount + 20; 
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // 1. Check abort at start of loop
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
     try {
-      await globalRateLimiter.wait(onStatus);
+      // 2. Wait for rate limiter (pass signal down)
+      await globalRateLimiter.wait(signal, onStatus);
+      
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       if (onStatus) onStatus("Sending request...");
       
       const ai = getClient();
       return await operation(ai);
     } catch (error: any) {
+      // If manually aborted, rethrow immediately
+      if (error.name === "AbortError" || signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+
       const status = error?.status || error?.code;
       const msg = error?.message || "";
 
-      // 400 Bad Request (Invalid API Key, Invalid Prompt) should NOT be retried
+      // 400 Bad Request should NOT be retried
       if (status === 400 || msg.includes("INVALID_ARGUMENT") || msg.includes("API_KEY_INVALID")) {
          throw new Error(`API Error (Non-retriable): ${msg}`);
       }
@@ -111,7 +140,7 @@ async function executeWithRetryAndRotation<T>(
         if (API_KEYS.length > 1) {
           if (onStatus) onStatus("Quota hit. Rotating key...");
           rotateKey();
-          await sleep(2000); 
+          await sleep(2000, signal); 
           continue;
         } else {
           // Exponential backoff
@@ -122,7 +151,7 @@ async function executeWithRetryAndRotation<T>(
           if (onStatus) onStatus(`Quota limit hit. Cooling down for ${seconds}s...`);
           console.log(`[Gemini Service] Quota limit (429). Waiting ${seconds}s before retry...`);
           
-          await sleep(backoff);
+          await sleep(backoff, signal);
           continue;
         }
       }
@@ -130,7 +159,7 @@ async function executeWithRetryAndRotation<T>(
       const isServerError = status === 503 || status === 500;
       if (isServerError && attempt < maxAttempts - 1) {
          if (onStatus) onStatus("Server error. Retrying in 5s...");
-         await sleep(5000);
+         await sleep(5000, signal);
          continue;
       }
       throw error;
@@ -141,13 +170,10 @@ async function executeWithRetryAndRotation<T>(
 
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
-
   const contextParts: string[] = [];
-
   if (speaker.instructions && speaker.instructions.trim()) {
     contextParts.push(`Persona instructions: ${speaker.instructions.trim()}`);
   }
-
   const specificDirections: string[] = [];
   if (speaker.speed && speaker.speed !== 'Normal') {
     specificDirections.push(`speaking ${speaker.speed.toLowerCase()}`);
@@ -155,21 +181,17 @@ export const formatPromptWithSettings = (text: string, speaker?: Speaker): strin
   if (speaker.accent && speaker.accent !== 'Neutral') {
     specificDirections.push(`${speaker.accent} accent`);
   }
-
   if (specificDirections.length > 0) {
     contextParts.push(`Direction: (${specificDirections.join(', ')})`);
   }
-
-  if (contextParts.length === 0) {
-    return text;
-  }
-
+  if (contextParts.length === 0) return text;
   return `[${contextParts.join(' | ')}] ${text}`;
 };
 
 export const generateSpeech = async (
   script: string,
-  speakers: Speaker[]
+  speakers: Speaker[],
+  signal?: AbortSignal
 ): Promise<string | undefined> => {
   
   const speakerVoiceConfigs = speakers.map((s) => ({
@@ -205,15 +227,19 @@ export const generateSpeech = async (
       throw new Error("No audio data returned from the model.");
     }
     return base64Audio;
-  });
+  }, 10, undefined, signal);
 };
 
 export const previewSpeakerVoice = async (
   voiceName: string, 
   text?: string,
-  onStatusUpdate?: (msg: string) => void
+  onStatusUpdate?: (msg: string) => void,
+  signal?: AbortSignal
 ): Promise<string> => {
   return executeWithRetryAndRotation(async (ai) => {
+    // Check signal again before making the actual call
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
     const promptText = text || `Hello! I am ${voiceName}, and I'm ready to read your script.`;
     
     const response = await ai.models.generateContent({
@@ -234,5 +260,5 @@ export const previewSpeakerVoice = async (
       throw new Error("No audio data returned for preview.");
     }
     return base64Audio;
-  }, 10, onStatusUpdate);
+  }, 10, onStatusUpdate, signal);
 };
