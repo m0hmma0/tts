@@ -15,7 +15,7 @@ import {
 } from './utils/audioUtils';
 import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
 import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from './types';
-import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp } from 'lucide-react';
+import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp, Layers } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
 [00:00:01.000 -> 00:00:05.000] Speaker: Hello! Import an SRT file to get started with synchronized dubbing.`;
@@ -25,7 +25,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.0.0-batched-sync"; 
+const BUILD_REV = "v2.0.1-batched-fix"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -134,22 +134,28 @@ export default function App() {
           speakerName: line.speakerName,
           lines: [line],
           startTime: line.startTime,
-          endTime: line.endTime || (line.startTime + 3) // Fallback if no end time
+          endTime: line.endTime || (line.startTime + 3) 
         };
         continue;
       }
 
       const prevLine = currentChunk.lines[currentChunk.lines.length - 1];
-      const gap = line.startTime - (prevLine.endTime || prevLine.startTime);
+      
+      // FIX: Correctly calculate gap. If prevLine has no endTime, assume 2s duration for calculation.
+      const prevEndTime = prevLine.endTime || (prevLine.startTime + 2.0);
+      const gap = line.startTime - prevEndTime;
+
       const chunkDuration = (line.endTime || line.startTime) - currentChunk.startTime;
 
       // Merge criteria
       const isSameSpeaker = line.speakerName === currentChunk.speakerName;
-      const isTightGap = gap < 0.6; // 600ms
-      const isShortEnough = chunkDuration < 15.0; // Don't let chunks get too massive
+      // Allow slight overlap (negative gap) or tight gap (< 0.6s)
+      const isTightGap = gap < 0.6; 
+      const isShortEnough = chunkDuration < 15.0; // Keep reasonable chunk size for TTS stability
 
       if (isSameSpeaker && isTightGap && isShortEnough) {
         currentChunk.lines.push(line);
+        // Update chunk end time
         currentChunk.endTime = line.endTime || (line.startTime + 3);
       } else {
         // Push current and start new
@@ -188,6 +194,8 @@ export default function App() {
       if (parsedLines.length === 0) throw new Error("No valid dialogue lines found (check timestamps).");
 
       const chunks = createDubbingChunks(parsedLines);
+      console.log(`Batched ${parsedLines.length} lines into ${chunks.length} generation chunks.`);
+      
       const buffers: AudioBuffer[] = [];
       const allTimings: WordTiming[] = [];
       
@@ -197,9 +205,11 @@ export default function App() {
         if (signal.aborted) throw new Error("AbortError");
         
         const chunk = chunks[i];
-        setProgressMsg(`Generating chunk ${i + 1} of ${chunks.length}...`);
+        setProgressMsg(`Generating chunk ${i + 1} of ${chunks.length} (${Math.round((i/chunks.length)*100)}%)...`);
 
         // 1. Calculate timing relative to timeline
+        // If the chunk starts later than our current audio head, insert silence.
+        // If it starts earlier (overlap), we currently just continue (no mixing implemented, straightforward sequencing).
         const silenceNeeded = chunk.startTime - currentTimelineTime;
         if (silenceNeeded > 0.05) {
           buffers.push(createSilentBuffer(audioCtx, silenceNeeded));
@@ -207,29 +217,35 @@ export default function App() {
         }
 
         // 2. Prepare Prompt
-        // Combine text naturally. Remove repeated names/directions for smoother reading.
+        // Combine text naturally. 
         const combinedText = chunk.lines.map(l => l.spokenText).join(" ");
         const speaker = speakers.find(s => s.name.toLowerCase() === chunk.speakerName.toLowerCase());
         const voice = speaker ? speaker.voice : VoiceName.Kore;
 
-        // Use formatted prompt but applied to the *Batch*
         const prompt = formatPromptWithSettings(combinedText, speaker);
 
         // 3. Call API (Rate Limited Internally)
-        const base64Audio = await previewSpeakerVoice(voice, prompt);
+        let base64Audio: string;
+        try {
+          base64Audio = await previewSpeakerVoice(voice, prompt);
+        } catch (apiErr: any) {
+           console.error("API Error on chunk", i, apiErr);
+           throw new Error(`Failed to generate audio for chunk ${i+1}: ${apiErr.message}`);
+        }
+
         const audioBytes = decodeBase64(base64Audio);
         const chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
 
         // 4. Fit to Duration (Dubbing Sync)
-        // Allowed duration is determined by the SRT bounds of the chunk
         let finalChunkBuffer = chunkRawBuffer;
         
-        // Duration window defined by SRT
+        // Define the target window size based on SRT timestamps
         const targetDuration = chunk.endTime - chunk.startTime;
 
-        // If generated audio is significantly longer than the slot, compress it
-        // We give a little leeway (0.2s) before compressing to keep it natural
-        if (chunkRawBuffer.duration > (targetDuration + 0.2)) {
+        // Only compress if the audio is significantly longer than the allocated slot
+        // We allow 0.5s overflow before compressing to keep it sounding natural
+        if (chunkRawBuffer.duration > (targetDuration + 0.5)) {
+           // Fit strictly to target duration
            finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, targetDuration, audioCtx);
         }
 
@@ -268,7 +284,7 @@ export default function App() {
         console.error(error);
         setGenerationState({
           isGenerating: false,
-          error: error.message || "Generation failed.",
+          error: error.message || "Generation failed. Please check API keys and try again.",
           audioBuffer: null,
           timings: null
         });
@@ -325,7 +341,7 @@ export default function App() {
       const item = val as AudioCacheItem;
       serializedCache[key] = {
         audio: audioBufferToBase64(item.buffer),
-        timings: item.timings // Save timings to JSON
+        timings: item.timings
       };
     }
 
@@ -335,13 +351,13 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.0.0',
+      version: '2.0.1',
       timestamp: new Date().toISOString(),
       script,
       speakers,
       audioCache: serializedCache,
       fullAudio: serializedFullAudio,
-      fullTimings: generationState.timings // Save full timings
+      fullTimings: generationState.timings
     };
     
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -378,12 +394,10 @@ export default function App() {
               for (const [key, value] of Object.entries(data.audioCache)) {
                 // Backward compatibility check
                 if (typeof value === 'string') {
-                   // Old format (just base64)
                    const bytes = decodeBase64(value);
                    const buffer = await decodeAudioData(bytes, ctx, 24000);
                    newCache[key] = { buffer, timings: [] };
                 } else {
-                   // New format { audio, timings }
                    const v = value as { audio: string, timings: any[] };
                    const bytes = decodeBase64(v.audio);
                    const buffer = await decodeAudioData(bytes, ctx, 24000);
@@ -510,18 +524,18 @@ export default function App() {
                   {generationState.isGenerating ? (
                     <>
                       <Loader2 className="animate-spin" size={20} />
-                      Assembling...
+                      Processing...
                     </>
                   ) : (
                     <>
-                      <Sparkles size={20} />
-                      Generate Full Audio
+                      <Layers size={20} />
+                      Generate Batch Audio
                     </>
                   )}
                 </button>
                 
                 {progressMsg && (
-                    <div className="text-center text-xs text-slate-500 animate-pulse">
+                    <div className="text-center text-xs text-slate-500 animate-pulse font-mono">
                         {progressMsg}
                     </div>
                 )}

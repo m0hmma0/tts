@@ -9,43 +9,42 @@ const rawPool = process.env.API_KEY_POOL;
 let API_KEYS: string[] = [];
 
 // 1. Try to parse the pool injected by Vite
-// Vite 'define' replaces the variable with the literal value. 
-// If it was defined as JSON.stringify(['a','b']), rawPool IS the array ['a','b'].
 if (Array.isArray(rawPool)) {
   API_KEYS = rawPool;
 } else if (typeof rawPool === 'string') {
-  // If it somehow came through as a string (e.g. .env file directly), parse it
   try {
     const parsed = JSON.parse(rawPool);
     if (Array.isArray(parsed)) {
       API_KEYS = parsed;
     }
   } catch (e) {
-    // If parse fails, treat it as a single key string if it looks like one
     if (rawPool.length > 10) API_KEYS = [rawPool];
   }
 }
 
-// 2. Fallback to standard process.env.API_KEY if the pool is empty or failed
-if (API_KEYS.length === 0) {
-  if (process.env.API_KEY) {
-    API_KEYS.push(process.env.API_KEY);
-  }
+// 2. Fallback
+if (API_KEYS.length === 0 && process.env.API_KEY) {
+  API_KEYS.push(process.env.API_KEY);
 }
 
-// 3. Remove any empty strings/undefineds and deduplicate
+// 3. Deduplicate
 API_KEYS = [...new Set(API_KEYS.filter(k => !!k && k.trim().length > 0))];
 
-// Log for debugging (obfuscated)
-console.log(`Loaded ${API_KEYS.length} API keys.`);
+// --- DEBUG LOGGING ---
+// This will appear in the browser console so you can verify if keys are present
+if (API_KEYS.length === 0) {
+    console.error("%c[Gemini Service] CRITICAL: No API Keys found!", "color: red; font-weight: bold; font-size: 14px;");
+    console.error("If running on Vercel, please REDEPLOY the project to bake in the new Environment Variables.");
+} else {
+    console.log(`%c[Gemini Service] Loaded ${API_KEYS.length} API key(s) from build configuration.`, "color: green; font-weight: bold;");
+}
+// ---------------------
 
 let currentKeyIndex = 0;
 
 const getClient = (): GoogleGenAI => {
   if (API_KEYS.length === 0) {
-    console.error("API Key Error: API_KEYS array is empty.");
-    console.error("Raw Pool Type:", typeof rawPool);
-    throw new Error("No API Keys available. Please verify your .env file contains API_KEY or API_KEY_1...5 and redeploy.");
+    throw new Error("No API Keys configured. Please redeploy your application to update environment variables.");
   }
   const key = API_KEYS[currentKeyIndex];
   return new GoogleGenAI({ apiKey: key });
@@ -54,14 +53,14 @@ const getClient = (): GoogleGenAI => {
 const rotateKey = () => {
   if (API_KEYS.length <= 1) return;
   currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-  console.log(`Rotated API Key to index ${currentKeyIndex}`);
+  console.log(`[Gemini Service] Rotated API Key to index ${currentKeyIndex}`);
 };
 
 // --- Rate Limiter ---
 
 class RateLimiter {
   private lastCallTime: number = 0;
-  private minInterval: number = 7000; // 7 seconds between calls (approx 8.5 RPM)
+  private minInterval: number = 7000; // 7 seconds (Safe for ~10 RPM limit)
 
   async wait() {
     const now = Date.now();
@@ -69,6 +68,7 @@ class RateLimiter {
     
     if (timeSinceLast < this.minInterval) {
       const waitTime = this.minInterval - timeSinceLast;
+      // console.debug(`[RateLimiter] Throttling request for ${waitTime}ms...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     
@@ -86,23 +86,19 @@ async function executeWithRetryAndRotation<T>(
   operation: (ai: GoogleGenAI) => Promise<T>,
   retries = 3
 ): Promise<T> {
-  // If we have multiple keys, we can try more aggressively. 
-  // If only 1 key, we must respect backoff strictly.
   const keysCount = Math.max(1, API_KEYS.length);
   const maxAttempts = retries * keysCount; 
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      // Enforce rate limit before every attempt
       await globalRateLimiter.wait();
-
       const ai = getClient();
       return await operation(ai);
     } catch (error: any) {
       const status = error?.status || error?.code;
       const msg = error?.message || "";
 
-      console.warn(`API Attempt ${attempt + 1} failed: ${msg}`);
+      console.warn(`[Gemini Service] Attempt ${attempt + 1}/${maxAttempts} failed: ${msg}`);
 
       const isQuotaError = 
         status === 429 || 
@@ -113,13 +109,12 @@ async function executeWithRetryAndRotation<T>(
       if (isQuotaError) {
         if (API_KEYS.length > 1) {
           rotateKey();
-          // Short wait after rotation
           await sleep(1000); 
           continue;
         } else {
-          // Exponential backoff if single key
+          // Exponential backoff
           const backoff = 7000 * Math.pow(2, attempt); 
-          console.log(`Quota hit (single key). Backing off for ${backoff}ms...`);
+          console.log(`[Gemini Service] Quota limit. Backing off ${backoff}ms...`);
           await sleep(backoff);
           continue;
         }
@@ -136,20 +131,15 @@ async function executeWithRetryAndRotation<T>(
   throw new Error("Failed to generate content after exhausting retries and API keys.");
 }
 
-/**
- * Enhanced helper to inject speaker settings and general instructions into the text prompt.
- */
 export const formatPromptWithSettings = (text: string, speaker?: Speaker): string => {
   if (!speaker) return text;
 
   const contextParts: string[] = [];
 
-  // 1. General Speaker Instructions (System/Persona level)
   if (speaker.instructions && speaker.instructions.trim()) {
     contextParts.push(`Persona instructions: ${speaker.instructions.trim()}`);
   }
 
-  // 2. Specific Voice Directions
   const specificDirections: string[] = [];
   if (speaker.speed && speaker.speed !== 'Normal') {
     specificDirections.push(`speaking ${speaker.speed.toLowerCase()}`);
@@ -166,11 +156,8 @@ export const formatPromptWithSettings = (text: string, speaker?: Speaker): strin
     return text;
   }
 
-  // Combine instructions as a prefix block
   return `[${contextParts.join(' | ')}] ${text}`;
 };
-
-// --- Exported Functions ---
 
 export const generateSpeech = async (
   script: string,
