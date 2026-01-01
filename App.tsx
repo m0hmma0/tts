@@ -4,6 +4,7 @@ import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
 import { AudioPlayer } from './components/AudioPlayer';
 import { previewSpeakerVoice, formatPromptWithSettings } from './services/geminiService';
+import { generateOpenAISpeech } from './services/openaiService';
 import { 
   decodeBase64, 
   decodeAudioData, 
@@ -14,7 +15,7 @@ import {
   fitAudioToMaxDuration
 } from './utils/audioUtils';
 import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
-import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming } from './types';
+import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming, TTSProvider } from './types';
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp, Layers, Trash2 } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
@@ -25,7 +26,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.2.0-immediate-stop"; 
+const BUILD_REV = "v2.3.0-openai-support"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -46,11 +47,9 @@ interface DubbingChunk {
 }
 
 // Helper to generate a unique key for a chunk based on its content and timing target
-const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>): string => {
-    // We include text, speaker, and exact duration target. 
-    // If user changes timing, we must regenerate to fit new duration.
-    const content = chunk.speakerName + chunk.lines.map(l => l.spokenText).join('') + chunk.startTime.toFixed(3) + chunk.endTime.toFixed(3);
-    // Simple hash function
+const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
+    // We include provider, text, speaker, and exact duration target. 
+    const content = provider + chunk.speakerName + chunk.lines.map(l => l.spokenText).join('') + chunk.startTime.toFixed(3) + chunk.endTime.toFixed(3);
     let hash = 0, i, chr;
     if (content.length === 0) return hash.toString();
     for (i = 0; i < content.length; i++) {
@@ -65,6 +64,10 @@ export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
   const [script, setScript] = useState(INITIAL_SCRIPT);
   
+  // TTS Provider State
+  const [provider, setProvider] = useState<TTSProvider>('google');
+  const [openAiKey, setOpenAiKey] = useState<string>('');
+
   // Cache for single line previews
   const [audioCache, setAudioCache] = useState<Record<string, AudioCacheItem>>({});
 
@@ -89,8 +92,6 @@ export default function App() {
   const handleAbort = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
-      // Explicitly set paused state here. 
-      // The generation loop catch block will see the AbortError and should NOT overwrite this message.
       setGenerationState(prev => ({ ...prev, isGenerating: false, error: "Generation paused by user. Click Resume to continue." }));
       setProgressMsg("Paused");
     }
@@ -188,10 +189,10 @@ export default function App() {
     }
     if (currentChunk) rawChunks.push(currentChunk);
 
-    // Assign IDs
+    // Assign IDs with Provider awareness
     return rawChunks.map(c => ({
         ...c,
-        id: generateChunkHash(c)
+        id: generateChunkHash(c, provider)
     }));
   };
 
@@ -208,10 +209,14 @@ export default function App() {
       return;
     }
 
+    if (provider === 'openai' && !openAiKey.trim()) {
+       setGenerationState(prev => ({ ...prev, error: "OpenAI API Key is required for OpenAI TTS mode. Please check settings in the Speaker panel." }));
+       return;
+    }
+
     setGenerationState(prev => ({ ...prev, isGenerating: true, error: null }));
     setProgressMsg("Preparing...");
     
-    // Create a new controller for THIS generation run
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const signal = controller.signal;
@@ -234,7 +239,6 @@ export default function App() {
       let newlyGeneratedCount = 0;
 
       for (let i = 0; i < chunks.length; i++) {
-        // Critical: Check abort at start of loop iteration
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         
         const chunk = chunks[i];
@@ -252,33 +256,59 @@ export default function App() {
         let chunkTimings: WordTiming[];
 
         if (chunkCache[chunk.id]) {
-            // CACHE HIT - Skip API
             setProgressMsg(`Using cached chunk ${i + 1}/${chunks.length}...`);
             finalChunkBuffer = chunkCache[chunk.id].buffer;
-            const cachedT = chunkCache[chunk.id].timings;
-            chunkTimings = cachedT;
-            // Allow UI update
+            chunkTimings = chunkCache[chunk.id].timings;
             await new Promise(r => setTimeout(r, 10)); 
         } else {
             // CACHE MISS - Call API
             const combinedText = chunk.lines.map(l => l.spokenText).join(" ");
             const speaker = speakers.find(s => s.name.toLowerCase() === chunk.speakerName.toLowerCase());
-            const voice = speaker ? speaker.voice : VoiceName.Kore;
-
-            const prompt = formatPromptWithSettings(combinedText, speaker);
+            
+            // Get Voice based on provider
+            let voice: VoiceName;
+            if (provider === 'google') {
+                voice = speaker ? speaker.voice : VoiceName.Kore;
+            } else {
+                voice = speaker ? speaker.voice : VoiceName.Alloy;
+            }
 
             let base64Audio: string;
-            try {
-              // Pass signal and callback
-              base64Audio = await previewSpeakerVoice(voice, prompt, (status) => {
-                 setProgressMsg(`Chunk ${i+1}: ${status}`);
-              }, signal);
-            } catch (apiErr: any) {
-               // If aborted inside service, it rethrows AbortError. Catch it here and rethrow to break loop.
-               if (apiErr.name === "AbortError") throw apiErr;
+            
+            if (provider === 'google') {
+                // GOOGLE GEMINI PATH
+                const prompt = formatPromptWithSettings(combinedText, speaker);
+                try {
+                  base64Audio = await previewSpeakerVoice(voice, prompt, (status) => {
+                     setProgressMsg(`Chunk ${i+1}: ${status}`);
+                  }, signal);
+                } catch (apiErr: any) {
+                   if (apiErr.name === "AbortError") throw apiErr;
+                   console.error("API Error on chunk", i, apiErr);
+                   throw new Error(`Failed to generate chunk ${i+1}: ${apiErr.message}`);
+                }
+            } else {
+                // OPENAI PATH
+                // Rate Limiting: 1 call every ~7 seconds
+                // If it's not the first chunk (and we just generated something), wait 7 seconds
+                // Note: cache hits don't need waiting.
+                if (newlyGeneratedCount > 0) {
+                     setProgressMsg(`OpenAI Rate Limit: Waiting 7s...`);
+                     const waitEnd = Date.now() + 7000;
+                     while(Date.now() < waitEnd) {
+                         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+                         await new Promise(r => setTimeout(r, 200));
+                     }
+                }
 
-               console.error("API Error on chunk", i, apiErr);
-               throw new Error(`Failed to generate chunk ${i+1}: ${apiErr.message}`);
+                setProgressMsg(`Generating chunk ${i + 1} with OpenAI...`);
+                try {
+                    base64Audio = await generateOpenAISpeech(combinedText, voice, openAiKey, signal);
+                } catch (apiErr: any) {
+                    if (apiErr.name === "AbortError") throw apiErr;
+                    console.error("API Error on chunk", i, apiErr);
+                    throw new Error(`Failed to generate chunk ${i+1}: ${apiErr.message}`);
+                }
             }
 
             const audioBytes = decodeBase64(base64Audio);
@@ -333,8 +363,6 @@ export default function App() {
     } catch (error: any) {
       if (error.name === "AbortError" || error.message === "AbortError") {
         console.log("Generation loop terminated via AbortSignal.");
-        // We do NOT reset state here because handleAbort() sets the UI to "Paused".
-        // We just exit cleanly.
       } else {
         console.error(error);
         setGenerationState(prev => ({
@@ -348,8 +376,6 @@ export default function App() {
         await audioCtx.close();
       }
       abortControllerRef.current = null;
-      
-      // Clean up success message
       setTimeout(() => { 
         if (!generationState.error) setProgressMsg(""); 
       }, 3000);
@@ -384,7 +410,6 @@ export default function App() {
   };
 
   const handleSaveProject = () => {
-    // Save both preview cache and chunk cache
     const serializedCache: Record<string, any> = {};
     for (const [key, val] of Object.entries(audioCache)) {
       const item = val as AudioCacheItem;
@@ -409,10 +434,11 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.2.0',
+      version: '2.3.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,
+      provider, // Save provider selection
       audioCache: serializedCache,
       chunkCache: serializedChunkCache,
       fullAudio: serializedFullAudio,
@@ -445,6 +471,8 @@ export default function App() {
             setScript(data.script);
             setSpeakers(data.speakers);
             
+            if (data.provider) setProvider(data.provider);
+
             const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
             
             // Load Preview Cache
@@ -510,7 +538,7 @@ export default function App() {
               </span>
               Gemini TTS Studio
             </h1>
-            <p className="mt-2 text-slate-500">Generate realistic multi-speaker dialogue with stage directions.</p>
+            <p className="mt-2 text-slate-500">Generate realistic multi-speaker dialogue.</p>
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
@@ -531,9 +559,9 @@ export default function App() {
             <input type="file" ref={fileInputRef} onChange={handleLoadProject} className="hidden" accept=".json" />
 
             <div className="flex flex-col items-end">
-              <div className="flex items-center gap-2 text-xs text-slate-500 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  gemini-2.5-flash
+              <div className={`flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-lg border shadow-sm ${provider === 'google' ? 'text-slate-600 bg-white border-slate-200' : 'text-white bg-indigo-600 border-indigo-500'}`}>
+                  <span className={`w-2 h-2 rounded-full animate-pulse ${provider === 'google' ? 'bg-emerald-500' : 'bg-white'}`}></span>
+                  {provider === 'google' ? 'Gemini Flash' : 'OpenAI TTS'}
               </div>
               <div className="mt-2 text-xs font-mono font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 tracking-wide">
                 BUILD: {BUILD_REV}
@@ -545,7 +573,14 @@ export default function App() {
         <main className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
           
           <div className="lg:col-span-1 space-y-6">
-            <SpeakerManager speakers={speakers} setSpeakers={setSpeakers} />
+            <SpeakerManager 
+                speakers={speakers} 
+                setSpeakers={setSpeakers} 
+                provider={provider}
+                setProvider={setProvider}
+                openAiKey={openAiKey}
+                setOpenAiKey={setOpenAiKey}
+            />
             
             <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm">
               <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Actions</h3>
@@ -642,7 +677,7 @@ export default function App() {
         </main>
 
         <footer className="text-center text-slate-400 text-sm pt-8 pb-4">
-          Powered by Google Gemini 2.5 Flash • Web Audio API • React • Build {BUILD_REV}
+          Powered by {provider === 'google' ? 'Google Gemini 2.5 Flash' : 'OpenAI TTS'} • Web Audio API • React • Build {BUILD_REV}
         </footer>
       </div>
     </div>

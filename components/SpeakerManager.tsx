@@ -1,21 +1,38 @@
+
 import React, { useState, useRef, useEffect } from 'react';
-import { Speaker, VoiceName } from '../types';
-import { Plus, Trash2, User, Play, Loader2, Square, Globe, Gauge, MessageSquareText } from 'lucide-react';
+import { Speaker, VoiceName, TTSProvider } from '../types';
+import { Plus, Trash2, User, Play, Loader2, Square, Globe, Gauge, MessageSquareText, Settings, Key } from 'lucide-react';
 import { previewSpeakerVoice, formatPromptWithSettings } from '../services/geminiService';
+import { generateOpenAISpeech } from '../services/openaiService';
 import { decodeBase64, decodeAudioData } from '../utils/audioUtils';
 
 interface SpeakerManagerProps {
   speakers: Speaker[];
   setSpeakers: React.Dispatch<React.SetStateAction<Speaker[]>>;
+  provider: TTSProvider;
+  setProvider: (p: TTSProvider) => void;
+  openAiKey: string;
+  setOpenAiKey: (k: string) => void;
 }
 
 const ACCENTS = ['Neutral', 'British', 'American', 'Australian', 'Indian', 'Southern US', 'French', 'German'];
 const SPEEDS = ['Very Slow', 'Slow', 'Normal', 'Fast', 'Very Fast'];
 
-export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpeakers }) => {
+const GOOGLE_VOICES = [VoiceName.Puck, VoiceName.Charon, VoiceName.Kore, VoiceName.Fenrir, VoiceName.Zephyr, VoiceName.Aoede];
+const OPENAI_VOICES = [VoiceName.Alloy, VoiceName.Echo, VoiceName.Fable, VoiceName.Onyx, VoiceName.Nova, VoiceName.Shimmer];
+
+export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ 
+  speakers, 
+  setSpeakers,
+  provider,
+  setProvider,
+  openAiKey,
+  setOpenAiKey
+}) => {
   const [previewState, setPreviewState] = useState<{ id: string; status: 'loading' | 'playing' } | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -28,11 +45,24 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     };
   }, []);
 
+  // Ensure speakers have valid voices for the selected provider
+  useEffect(() => {
+    const validVoices = provider === 'google' ? GOOGLE_VOICES : OPENAI_VOICES;
+    const defaultVoice = provider === 'google' ? VoiceName.Kore : VoiceName.Alloy;
+    
+    setSpeakers(prev => prev.map(s => {
+      if (!validVoices.includes(s.voice)) {
+        return { ...s, voice: defaultVoice };
+      }
+      return s;
+    }));
+  }, [provider, setSpeakers]);
+
   const addSpeaker = () => {
     const newSpeaker: Speaker = {
       id: crypto.randomUUID(),
       name: `Speaker ${speakers.length + 1}`,
-      voice: VoiceName.Kore,
+      voice: provider === 'google' ? VoiceName.Kore : VoiceName.Alloy,
       accent: 'Neutral',
       speed: 'Normal',
       instructions: ''
@@ -72,10 +102,16 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
     setPreviewState({ id: speaker.id, status: 'loading' });
 
     try {
-      const sampleText = `Hello! I am ${speaker.name}. This is my unique voice profile.`;
-      const prompt = formatPromptWithSettings(sampleText, speaker);
+      let base64Audio = '';
       
-      const base64Audio = await previewSpeakerVoice(speaker.voice, prompt);
+      if (provider === 'google') {
+        const sampleText = `Hello! I am ${speaker.name}. This is my unique voice profile.`;
+        const prompt = formatPromptWithSettings(sampleText, speaker);
+        base64Audio = await previewSpeakerVoice(speaker.voice, prompt);
+      } else {
+        const sampleText = `Hello! I am ${speaker.name}. This is my unique voice profile using OpenAI.`;
+        base64Audio = await generateOpenAISpeech(sampleText, speaker.voice, openAiKey);
+      }
       
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
@@ -103,9 +139,12 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
 
     } catch (error) {
       console.error("Preview failed", error);
+      alert(error instanceof Error ? error.message : "Preview failed");
       setPreviewState(null);
     }
   };
+
+  const availableVoices = provider === 'google' ? GOOGLE_VOICES : OPENAI_VOICES;
 
   return (
     <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm h-full overflow-y-auto max-h-[700px]">
@@ -114,14 +153,70 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
           <User size={20} className="text-indigo-600" />
           Cast & Voices
         </h2>
-        <button
-          onClick={addSpeaker}
-          className="flex items-center gap-1 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-full transition-colors"
-        >
-          <Plus size={14} />
-          Add Speaker
-        </button>
+        <div className="flex gap-2">
+           <button 
+             onClick={() => setShowSettings(!showSettings)}
+             className={`p-1.5 rounded-full transition-colors ${showSettings ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'}`}
+             title="Provider Settings"
+           >
+             <Settings size={16} />
+           </button>
+           <button
+            onClick={addSpeaker}
+            className="flex items-center gap-1 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-full transition-colors"
+          >
+            <Plus size={14} />
+            Add Speaker
+          </button>
+        </div>
       </div>
+
+      {showSettings && (
+        <div className="mb-6 p-4 bg-slate-50 rounded-lg border border-slate-200 animate-in fade-in slide-in-from-top-2">
+          <h3 className="text-xs font-bold uppercase text-slate-500 mb-3">TTS Provider Settings</h3>
+          
+          <div className="flex gap-4 mb-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input 
+                type="radio" 
+                name="provider" 
+                value="google" 
+                checked={provider === 'google'} 
+                onChange={() => setProvider('google')}
+                className="text-indigo-600 focus:ring-indigo-500" 
+              />
+              <span className="text-sm font-medium text-slate-700">Google Gemini</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input 
+                type="radio" 
+                name="provider" 
+                value="openai" 
+                checked={provider === 'openai'} 
+                onChange={() => setProvider('openai')}
+                className="text-indigo-600 focus:ring-indigo-500" 
+              />
+              <span className="text-sm font-medium text-slate-700">OpenAI</span>
+            </label>
+          </div>
+
+          {provider === 'openai' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1 flex items-center gap-1">
+                <Key size={12} /> OpenAI API Key
+              </label>
+              <input 
+                type="password" 
+                value={openAiKey}
+                onChange={(e) => setOpenAiKey(e.target.value)}
+                placeholder="sk-..."
+                className="w-full bg-white text-slate-900 text-sm px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">Required for OpenAI TTS. Not stored on server.</p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-4">
         {speakers.length === 0 && (
@@ -157,9 +252,9 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                       onChange={(e) => updateSpeaker(speaker.id, 'voice', e.target.value as VoiceName)}
                       className="w-full appearance-none bg-white text-slate-900 text-sm px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
                     >
-                      {Object.values(VoiceName).map((v) => (
+                      {availableVoices.map((v) => (
                         <option key={v} value={v}>
-                          {v}
+                          {v.charAt(0).toUpperCase() + v.slice(1)}
                         </option>
                       ))}
                     </select>
@@ -201,8 +296,9 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                 value={speaker.instructions || ''}
                 onChange={(e) => updateSpeaker(speaker.id, 'instructions', e.target.value)}
                 rows={2}
-                placeholder="e.g. Speaks with a raspy tone, very enthusiastic, often pauses between words..."
-                className="w-full bg-white text-slate-700 text-xs px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors resize-none placeholder-slate-400"
+                disabled={provider === 'openai'}
+                placeholder={provider === 'openai' ? "Stage directions are not supported by OpenAI TTS." : "e.g. Speaks with a raspy tone, very enthusiastic, often pauses between words..."}
+                className="w-full bg-white text-slate-700 text-xs px-3 py-2 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors resize-none placeholder-slate-400 disabled:bg-slate-100 disabled:text-slate-400"
               />
             </div>
 
@@ -216,7 +312,8 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   <select
                     value={speaker.accent || 'Neutral'}
                     onChange={(e) => updateSpeaker(speaker.id, 'accent', e.target.value)}
-                    className="w-full appearance-none bg-white text-slate-700 text-xs px-2 py-1.5 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
+                    disabled={provider === 'openai'}
+                    className="w-full appearance-none bg-white text-slate-700 text-xs px-2 py-1.5 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer disabled:bg-slate-100 disabled:text-slate-400"
                   >
                     {ACCENTS.map((acc) => (
                       <option key={acc} value={acc}>{acc}</option>
@@ -236,7 +333,8 @@ export const SpeakerManager: React.FC<SpeakerManagerProps> = ({ speakers, setSpe
                   <select
                     value={speaker.speed || 'Normal'}
                     onChange={(e) => updateSpeaker(speaker.id, 'speed', e.target.value)}
-                    className="w-full appearance-none bg-white text-slate-700 text-xs px-2 py-1.5 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer"
+                    disabled={provider === 'openai'}
+                    className="w-full appearance-none bg-white text-slate-700 text-xs px-2 py-1.5 rounded border border-slate-300 focus:border-indigo-500 focus:outline-none transition-colors cursor-pointer disabled:bg-slate-100 disabled:text-slate-400"
                   >
                     {SPEEDS.map((s) => (
                       <option key={s} value={s}>{s}</option>

@@ -1,11 +1,22 @@
 
+export type TTSProvider = 'google' | 'openai';
+
 export enum VoiceName {
+  // Google Gemini Voices
   Puck = 'Puck',
   Charon = 'Charon',
   Kore = 'Kore',
   Fenrir = 'Fenrir',
   Zephyr = 'Zephyr',
-  Aoede = 'Aoede'
+  Aoede = 'Aoede',
+  
+  // OpenAI Voices
+  Alloy = 'alloy',
+  Echo = 'echo',
+  Fable = 'fable',
+  Onyx = 'onyx',
+  Nova = 'nova',
+  Shimmer = 'shimmer'
 }
 
 export interface Speaker {
