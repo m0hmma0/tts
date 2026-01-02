@@ -29,7 +29,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.9.0-sola-sync"; 
+const BUILD_REV = "v2.10.0-hq-sola"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -563,7 +563,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.9.0',
+      version: '2.10.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,

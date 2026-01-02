@@ -72,10 +72,10 @@ export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBu
  */
 function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioContext): AudioBuffer {
   // Tuned parameters for speech (High Quality)
-  // Larger windows (60ms) capture pitch periods of low voices better than 20ms
-  const GRAIN_SIZE_S = 0.060; 
-  const OVERLAP_S = 0.015;    
-  const SEARCH_S = 0.015;     
+  // Larger windows capture pitch periods of low voices better
+  const GRAIN_SIZE_S = 0.075; // 75ms grain
+  const OVERLAP_S = 0.025;    // 25ms overlap
+  const SEARCH_S = 0.020;     // 20ms search window
   
   const sampleRate = buffer.sampleRate;
   const numChannels = buffer.numberOfChannels;
