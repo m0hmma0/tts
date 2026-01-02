@@ -29,7 +29,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.6.0-sync-editor"; 
+const BUILD_REV = "v2.7.0-strict-sync"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -238,7 +238,7 @@ export default function App() {
         voice = speaker ? speaker.voice : VoiceName.Alloy;
     }
 
-    addLog('info', `Generating audio for [${chunk.speakerName}]: "${combinedText.substring(0, 30)}..." (${provider})`);
+    addLog('info', `Generating [${chunk.speakerName}] (${(chunk.endTime - chunk.startTime).toFixed(1)}s target): "${combinedText.substring(0, 30)}..."`);
 
     let base64Audio: string;
     
@@ -269,25 +269,9 @@ export default function App() {
         chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
     }
 
-    // Fit to Duration with Drift Compensation
-    let finalChunkBuffer = chunkRawBuffer;
-    const nominalDuration = chunk.endTime - chunk.startTime;
-    
-    // For single chunk regeneration, we assume 0 drift from previous since we don't have that context easily,
-    // or we could recalculate if we are in loop.
-    // The loop calculates drift. Here we just strictly fit to nominal if needed.
-    
-    if (chunkRawBuffer.duration > (nominalDuration + 0.1)) {
-        addLog('info', `Compressing audio: ${chunkRawBuffer.duration.toFixed(2)}s -> ${nominalDuration.toFixed(2)}s`);
-        finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, nominalDuration, audioCtx);
-    }
-
-    // Estimate Timings
-    const chunkTimings = estimateWordTimings(combinedText, finalChunkBuffer.duration);
-
     return { 
-        buffer: finalChunkBuffer, 
-        timings: chunkTimings,
+        buffer: chunkRawBuffer, 
+        timings: [], // Timings calculated after compression
         wasCached: false
     };
   };
@@ -304,10 +288,19 @@ export default function App() {
               continue; 
           }
 
+          // Strict Sync Alignment:
+          // We always respect the chunk.startTime.
+          // If there is a gap between currentTimelineTime and chunk.startTime, we fill with silence.
+          // If we are overlapping (negative silenceNeeded), strict sync implies we should have compressed the previous chunk.
+          // However, if we are still overlapping due to minimal compression limits, we might just have to overlap (mix) or cut?
+          // For Dubbing, we usually strictly cut or ensure previous fits.
+          // Since we compress chunks to fit their slots, overlaps should be negligible (floating point drift).
+          
           const silenceNeeded = chunk.startTime - currentTimelineTime;
-          if (silenceNeeded > 0.05) {
-            orderedBuffers.push(createSilentBuffer(audioCtx, silenceNeeded));
-            currentTimelineTime += silenceNeeded;
+          
+          if (silenceNeeded > 0.001) {
+             orderedBuffers.push(createSilentBuffer(audioCtx, silenceNeeded));
+             currentTimelineTime += silenceNeeded;
           }
 
           const offsetTimings = cached.timings.map(t => ({
@@ -332,11 +325,6 @@ export default function App() {
       const chunk = plannedChunks.find(c => c.id === chunkId);
       if (!chunk) return;
       
-      // We need to update every line in the chunk to fit the new timing proportionally?
-      // Or just update the first start and last end?
-      // For SRT workflow, usually a chunk is 1-2 lines.
-      // Let's brute force replace the timestamps in the raw script string.
-      
       const oldStartStr = formatTimeForScript(chunk.startTime);
       const oldEndStr = formatTimeForScript(chunk.endTime);
 
@@ -346,20 +334,9 @@ export default function App() {
       // Note: This is a bit fragile if multiple lines have identical text/times, but sufficient for this tool.
       
       chunk.lines.forEach((line, idx) => {
-           // We only update the start of the first line and end of the last line in the chunk?
-           // Or we assume the user edited the chunk boundaries.
-           // Let's assume the user wants to stretch the whole chunk.
-           
            if (idx === 0) {
                // Update start time of first line
-               // Regex to find: [oldStart -> oldEnd] or [oldStart -> ...]
-               // This is tricky because lines inside a chunk might be contiguous.
-               // Simplest approach: Reconstruct the script text from the chunks, but that destroys comments/formatting.
-               
-               // Better approach: Replace specific string occurrences.
                const originalLineStr = line.originalText;
-               // Construct new line string with new times
-               // We need to parse the original line to keep text
                const contentMatch = originalLineStr.match(/^\[.*?\]\s*(.*)/);
                if (contentMatch) {
                    const textPart = contentMatch[1];
@@ -367,30 +344,13 @@ export default function App() {
                    // Replace only the first occurrence of the original line in the script
                    newScript = newScript.replace(originalLineStr, newLineStr);
                }
-           } else {
-               // For multi-line chunks, we usually merge them into one block for audio.
-               // If the user changed the chunk time, we should probably merge the lines in the script or update them all?
-               // Since our ChunkList treats them as one unit, let's just accept that we might break exact line-by-line SRT mapping 
-               // if we don't do complex math.
-               // COMPROMISE: We only support editing 1-line chunks cleanly. 
-               // If it's a multi-line chunk, we try to apply the new start to the first line and new end to the last line.
-               
-               // But `newScript.replace` inside a loop modifying `newScript` is dangerous.
-               // Let's skip complex multi-line logic for now and assume the user is fixing single blocks which is 90% of SRTs.
            }
       });
       
       setScript(newScript);
-      addLog('info', `Updated timing for chunk to ${newStart} -> ${newEnd}`);
+      addLog('info', `Updated timing constraint: ${newStart} -> ${newEnd}`);
       
-      // Trigger a re-plan implicitly by `useEffect` or just next render?
-      // `plannedChunks` is state. It needs to be updated.
-      // The `setScript` will trigger a re-render, but `plannedChunks` is calculated in `handleGenerate`.
-      // We need to auto-refresh the planned chunks. 
-      // Let's add a useEffect on `script` to update `plannedChunks`? 
-      // No, that might be too aggressive if typing.
-      
-      // Let's manually parse and update planned chunks immediately so the UI reflects it.
+      // Update planned chunks immediately for UI feedback
       setTimeout(() => {
           const parsedLines = parseScriptLines(newScript);
           const newChunks = createDubbingChunks(parsedLines);
@@ -404,7 +364,13 @@ export default function App() {
      
      setGenerationState(prev => ({ ...prev, isGenerating: true, error: null }));
      setLogs([]);
-     addLog('info', 'Starting generation process...');
+     
+     // Log API and Limits
+     const limitInfo = provider === 'google' 
+         ? "Rate Limit: 15 RPM (Free) / 1000 RPM (Pay-as-you-go). Input: 1M tokens/min." 
+         : "Rate Limit: Usage Tier Based (RPM/TPM).";
+     addLog('info', `Provider: ${provider === 'google' ? 'Google Gemini 2.5' : 'OpenAI TTS'} | ${limitInfo}`);
+     addLog('info', 'Starting Strict Sync Generation...');
      
      const controller = new AbortController();
      abortControllerRef.current = controller;
@@ -422,7 +388,6 @@ export default function App() {
          addLog('info', `Plan: ${chunks.length} chunks.`);
 
          let localCache = { ...chunkCache };
-         let currentTimelineTime = 0;
          let newlyGenerated = 0;
 
          for (let i = 0; i < chunks.length; i++) {
@@ -431,13 +396,10 @@ export default function App() {
              const chunk = chunks[i];
              setCompletedChunksCount(i);
              
-             const silenceNeeded = chunk.startTime - currentTimelineTime;
-             const drift = Math.max(0, -silenceNeeded);
-             
              if (!localCache[chunk.id]) {
-                 // Generate
+                 // Rate Limit Wait
                  if (provider === 'openai' && newlyGenerated > 0) {
-                     addLog('warn', 'Rate limit waiting...');
+                     addLog('warn', 'Rate limit protection (7s wait)...');
                      await new Promise(r => setTimeout(r, 7000));
                  }
                  
@@ -446,31 +408,27 @@ export default function App() {
                  // Generate raw
                  const result = await generateChunkAudio(chunk, audioCtx, signal, true);
                  
-                 // Compress/Drift Fix
+                 // STRICT SYNC COMPRESSION
                  let finalBuffer = result.buffer;
-                 const nominal = chunk.endTime - chunk.startTime;
-                 const target = Math.max(nominal * 0.5, nominal - drift);
+                 const targetDuration = chunk.endTime - chunk.startTime;
                  
-                 if (finalBuffer.duration > target + 0.1) {
-                     finalBuffer = await fitAudioToMaxDuration(finalBuffer, target, audioCtx);
+                 // If the generated audio is longer than the SRT slot (plus tiny tolerance), compress it.
+                 if (finalBuffer.duration > targetDuration + 0.05) {
+                     const ratio = finalBuffer.duration / targetDuration;
+                     addLog('warn', `  ↳ Too long (${finalBuffer.duration.toFixed(2)}s). Compressing to ${targetDuration.toFixed(2)}s (${ratio.toFixed(2)}x speed).`);
+                     finalBuffer = await fitAudioToMaxDuration(finalBuffer, targetDuration, audioCtx);
                  }
                  
                  const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
                  
                  localCache[chunk.id] = { buffer: finalBuffer, timings };
-                 addLog('success', `Generated chunk ${i+1}.`);
+                 addLog('success', `Chunk ${i+1} synced.`);
                  newlyGenerated++;
              } else {
-                 addLog('info', `Chunk ${i+1} used from cache.`);
+                 addLog('info', `Chunk ${i+1} from cache.`);
              }
-
-             // Update timeline tracking
-             const item = localCache[chunk.id];
-             if (silenceNeeded > 0.05) currentTimelineTime += silenceNeeded;
-             currentTimelineTime += item.buffer.duration;
          }
 
-         // Done loop, update React state once
          setChunkCache(localCache);
          
          // Stitch
@@ -482,7 +440,7 @@ export default function App() {
                  audioBuffer: stitchResult.finalBuffer,
                  timings: stitchResult.orderedTimings
              });
-             addLog('success', 'Audio stitching complete.');
+             addLog('success', 'Final Audio Complete.');
              setProgressMsg("Done!");
          } else {
              throw new Error("Stitching produced no audio.");
@@ -500,7 +458,8 @@ export default function App() {
   };
 
   const handleRegenerateChunk = async (chunk: DubbingChunk) => {
-      addLog('info', `Regenerating single chunk: ${chunk.id}`);
+      addLog('info', `Regenerating chunk: ${chunk.id}`);
+      addLog('info', `Constraint: Force fit to ${formatTimeForScript(chunk.startTime)} -> ${formatTimeForScript(chunk.endTime)}`);
       
       const controller = new AbortController();
       const signal = controller.signal;
@@ -512,24 +471,26 @@ export default function App() {
           // Force generate
           const result = await generateChunkAudio(chunk, audioCtx, signal, true);
           
-          // Update cache with new buffer (we don't apply complex drift compensation here 
-          // because we don't have the full timeline context easily, 
-          // we just fit to nominal duration to be safe)
+          // STRICT SYNC COMPRESSION FOR SINGLE CHUNK
           let finalBuffer = result.buffer;
-          const nominal = chunk.endTime - chunk.startTime;
-          if (finalBuffer.duration > nominal + 0.1) {
-              finalBuffer = await fitAudioToMaxDuration(finalBuffer, nominal, audioCtx);
+          const targetDuration = chunk.endTime - chunk.startTime;
+          
+          if (finalBuffer.duration > targetDuration + 0.05) {
+               addLog('warn', `Compressing ${finalBuffer.duration.toFixed(2)}s to fit ${targetDuration.toFixed(2)}s window.`);
+               finalBuffer = await fitAudioToMaxDuration(finalBuffer, targetDuration, audioCtx);
+          } else {
+              addLog('success', `Audio fits window (${finalBuffer.duration.toFixed(2)}s <= ${targetDuration.toFixed(2)}s).`);
           }
-           const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
+          
+          const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
 
           const newCache = { 
               ...chunkCache, 
               [chunk.id]: { buffer: finalBuffer, timings } 
           };
           setChunkCache(newCache);
-          addLog('success', `Chunk ${chunk.id} regenerated.`);
 
-          // Re-stitch full audio immediately
+          // Re-stitch full audio immediately using updated chunks list (plannedChunks)
           const stitchResult = stitchAudio(plannedChunks, newCache, audioCtx);
           if (stitchResult) {
                setGenerationState(prev => ({
@@ -616,7 +577,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.5.0',
+      version: '2.7.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,

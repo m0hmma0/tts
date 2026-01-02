@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { DubbingChunk, AudioCacheItem, WordTiming } from '../types';
-import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock } from 'lucide-react';
+import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock } from 'lucide-react';
 import { formatTimeForScript, parseScriptTimestamp } from '../utils/srtUtils';
 
 interface ChunkListProps {
@@ -58,7 +58,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
         <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center shrink-0">
             <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
                 <Clock size={16} className="text-indigo-600" />
-                Sync Manager
+                Sync Manager <span className="text-[10px] font-normal text-slate-400 ml-1">(Strict Mode Active)</span>
             </h3>
             <span className="text-xs text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
                 {Object.keys(chunkCache).length} / {chunks.length} Generated
@@ -72,8 +72,9 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                 
                 // Diff logic
                 const diff = actualDuration - targetDuration;
-                const isOvershoot = diff > 0.1; // 100ms tolerance
-                const isUndershoot = diff < -0.5; // Audio matches, but video has gap
+                // In Strict Sync mode, drifts should be minimal (rounding errors)
+                const isOvershoot = diff > 0.05; 
+                const isUndershoot = diff < -0.05;
                 
                 let borderColor = "border-transparent";
                 let statusColor = "text-slate-400";
@@ -83,7 +84,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                         borderColor = "border-red-500";
                         statusColor = "text-red-500";
                     } else if (isUndershoot) {
-                        borderColor = "border-amber-400"; // Gap warning
+                        borderColor = "border-amber-400";
                         statusColor = "text-amber-500";
                     } else {
                         borderColor = "border-emerald-400";
@@ -126,7 +127,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                             onClick={() => onRegenerate(chunk)}
                                             disabled={isGenerating}
                                             className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-30"
-                                            title="Regenerate this segment"
+                                            title="Regenerate this segment (Forces strict sync to Target Time)"
                                         >
                                             <RotateCcw size={16} />
                                         </button>
@@ -162,12 +163,13 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                     <button onClick={cancelEditing} className="text-red-500 hover:bg-red-50 p-1 rounded"><RotateCcw size={14} /></button>
                                 </div>
                             ) : (
-                                <div className="flex items-center gap-2 group/time cursor-pointer" onClick={() => startEditing(chunk)} title="Click to edit timestamps">
-                                    <span className="text-xs font-mono text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded">
+                                <div className="flex items-center gap-2 group/time cursor-pointer" onClick={() => startEditing(chunk)} title="Edit Target Duration (Constraints)">
+                                    <Lock size={10} className="text-slate-400" />
+                                    <span className="text-xs font-mono text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded group-hover/time:border-indigo-300 transition-colors">
                                         {formatTimeForScript(chunk.startTime)}
                                     </span>
                                     <span className="text-slate-300">→</span>
-                                    <span className="text-xs font-mono text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded">
+                                    <span className="text-xs font-mono text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded group-hover/time:border-indigo-300 transition-colors">
                                         {formatTimeForScript(chunk.endTime)}
                                     </span>
                                 </div>
@@ -177,12 +179,12 @@ export const ChunkList: React.FC<ChunkListProps> = ({
 
                             <div className="flex items-center gap-3 text-xs">
                                 <div className="flex flex-col">
-                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Target</span>
+                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Target Constraint</span>
                                     <span className="font-mono">{targetDuration.toFixed(2)}s</span>
                                 </div>
                                 
                                 <div className="flex flex-col">
-                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Actual</span>
+                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Actual Output</span>
                                     <span className={`font-mono font-bold ${statusColor}`}>
                                         {actualDuration > 0 ? actualDuration.toFixed(2) + 's' : '--'}
                                     </span>
@@ -191,10 +193,10 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                 {cached && (
                                     <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                                         isOvershoot ? 'bg-red-100 text-red-600' : 
-                                        isUndershoot ? 'bg-amber-100 text-amber-600' : 'bg-emerald-100 text-emerald-600'
+                                        isUndershoot ? 'bg-slate-200 text-slate-500' : 'bg-emerald-100 text-emerald-600'
                                     }`}>
-                                        {isOvershoot ? `+${diff.toFixed(2)}s Drift` : 
-                                         isUndershoot ? `${diff.toFixed(2)}s Gap` : 'Sync OK'}
+                                        {isOvershoot ? `+${diff.toFixed(2)}s (Sync Warn)` : 
+                                         isUndershoot ? `Padding Added` : 'Perfect Sync'}
                                     </div>
                                 )}
                             </div>
