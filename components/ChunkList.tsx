@@ -66,7 +66,21 @@ export const ChunkList: React.FC<ChunkListProps> = ({
         <div className="overflow-y-auto divide-y divide-slate-100 flex-1">
             {chunks.map((chunk, index) => {
                 const cached = chunkCache[chunk.id];
-                const targetDuration = chunk.endTime - chunk.startTime;
+                const isEditing = editingId === chunk.id;
+                
+                // Calculate dynamic target duration for feedback
+                let effectiveStartTime = chunk.startTime;
+                let effectiveEndTime = chunk.endTime;
+                
+                if (isEditing) {
+                    const parsedStart = parseScriptTimestamp(editStart);
+                    const parsedEnd = parseScriptTimestamp(editEnd);
+                    if (parsedStart !== null) effectiveStartTime = parsedStart;
+                    if (parsedEnd !== null) effectiveEndTime = parsedEnd;
+                }
+                
+                const targetDuration = Math.max(0, effectiveEndTime - effectiveStartTime);
+
                 // For actual displayed duration, we match target because we force-fitted it, unless cache is missing
                 const displayedDuration = cached ? cached.buffer.duration : 0;
                 
@@ -85,8 +99,6 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                         borderColor = "border-emerald-400";
                     }
                 }
-
-                const isEditing = editingId === chunk.id;
 
                 return (
                     <div key={chunk.id} className={`p-3 hover:bg-slate-50 transition-colors flex flex-col gap-2 border-l-4 ${borderColor}`}>
@@ -191,7 +203,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                             <div className="flex items-center gap-3 text-xs">
                                 <div className="flex flex-col">
                                     <span className="text-[10px] text-slate-400 uppercase font-bold">Target</span>
-                                    <span className="font-mono">{targetDuration.toFixed(2)}s</span>
+                                    <span className={`font-mono ${isEditing ? 'text-indigo-600 font-bold' : ''}`}>{targetDuration.toFixed(2)}s</span>
                                 </div>
                                 
                                 <div className="flex flex-col">

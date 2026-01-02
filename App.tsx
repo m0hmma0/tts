@@ -30,7 +30,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.1-logsave"; 
+const BUILD_REV = "v2.11.2"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -558,7 +558,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.1',
+      version: '2.11.2',
       timestamp: new Date().toISOString(),
       script,
       speakers,
