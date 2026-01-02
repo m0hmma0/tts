@@ -30,7 +30,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.2"; 
+const BUILD_REV = "v2.11.3-syncfix"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -109,9 +109,13 @@ export default function App() {
     const rawLines = rawScript.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const parsed: ScriptLine[] = [];
 
+    // Relaxed regex to handle optional milliseconds or slight variations
+    const rangeRegex = /^\[(\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*->\s*(\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?)\]\s*(.*)/;
+    const simpleRegex = /^\[(\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?)\]\s*(.*)/;
+
     for (const line of rawLines) {
-      const rangeMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
-      const simpleMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)/);
+      const rangeMatch = line.match(rangeRegex);
+      const simpleMatch = line.match(simpleRegex);
       
       let startTime = 0;
       let endTime: number | null = null;
@@ -201,6 +205,17 @@ export default function App() {
         id: generateChunkHash(c, provider)
     }));
   };
+
+  // Sync plannedChunks with script automatically to prevent stale state
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const parsedLines = parseScriptLines(script);
+      const chunks = createDubbingChunks(parsedLines);
+      setPlannedChunks(chunks);
+      setTotalChunksCount(chunks.length);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [script, provider]);
 
   const handleClearCache = () => {
     if (confirm("Are you sure? This will delete all generated chunks.")) {
@@ -311,13 +326,27 @@ export default function App() {
       return { finalBuffer, orderedTimings };
   };
 
+  const normalizeTimestamp = (input: string): string => {
+     // Ensure strict format HH:MM:SS.mmm for valid regex matching
+     const secs = parseScriptTimestamp(input);
+     if (secs !== null) {
+        return formatTimeForScript(secs);
+     }
+     return input; // Fallback
+  };
+
   const handleUpdateScriptTiming = (chunkId: string, newStart: string, newEnd: string) => {
       // Find the chunk
       const chunk = plannedChunks.find(c => c.id === chunkId);
       if (!chunk) return;
       
       let newScript = script;
-      
+      let updated = false;
+
+      // Normalize inputs to ensure they match standard script format
+      const safeStart = normalizeTimestamp(newStart);
+      const safeEnd = normalizeTimestamp(newEnd);
+
       chunk.lines.forEach((line, idx) => {
            if (idx === 0) {
                // Update start time of first line
@@ -325,21 +354,28 @@ export default function App() {
                const contentMatch = originalLineStr.match(/^\[.*?\]\s*(.*)/);
                if (contentMatch) {
                    const textPart = contentMatch[1];
-                   const newLineStr = `[${newStart} -> ${newEnd}] ${textPart}`;
-                   newScript = newScript.replace(originalLineStr, newLineStr);
+                   const newLineStr = `[${safeStart} -> ${safeEnd}] ${textPart}`;
+                   if (newScript.includes(originalLineStr)) {
+                       newScript = newScript.replace(originalLineStr, newLineStr);
+                       updated = true;
+                   } else {
+                       addLog('warn', 'Could not find original line in script. Script might have changed manually.');
+                   }
                }
            }
       });
       
-      setScript(newScript);
-      addLog('info', `Updated timing constraint: ${newStart} -> ${newEnd}`);
-      
-      // Update planned chunks immediately for UI feedback
-      setTimeout(() => {
+      if (updated) {
+          setScript(newScript);
+          addLog('info', `Updated timing constraint: ${safeStart} -> ${safeEnd}`);
+          // Force update planned chunks immediately instead of waiting for useEffect
+          // to make UI feel responsive
           const parsedLines = parseScriptLines(newScript);
           const newChunks = createDubbingChunks(parsedLines);
           setPlannedChunks(newChunks);
-      }, 0);
+      } else {
+          addLog('error', 'Failed to update script. Please try manually editing.');
+      }
   };
   
   // Real implementation of handleGenerate with local cache tracking
@@ -558,7 +594,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.2',
+      version: '2.11.3',
       timestamp: new Date().toISOString(),
       script,
       speakers,

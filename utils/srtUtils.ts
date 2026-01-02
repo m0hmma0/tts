@@ -24,7 +24,8 @@ export function parseSRT(data: string): SrtBlock[] {
 
     const timeLine = lines[timingIndex];
     // SRT format: 00:00:00,000 --> 00:00:00,000
-    const times = timeLine.match(/(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})/);
+    // Relaxed regex to handle dots or commas
+    const times = timeLine.match(/(\d{2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{1,3})/);
     if (!times) return null;
     
     const startSeconds = parseSrtTime(times[1]);
@@ -65,16 +66,33 @@ export function formatTimeForScript(seconds: number): string {
 }
 
 /**
- * Converts a string timestamp [HH:MM:SS.mmm] back to seconds
+ * Converts a string timestamp [HH:MM:SS.mmm] back to seconds.
+ * Supports optional milliseconds.
  */
 export function parseScriptTimestamp(timestamp: string): number | null {
-  const match = timestamp.match(/(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+  // Relaxed regex to match 1 or 2 digit hours, optional milliseconds (1-3 digits)
+  const match = timestamp.match(/(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/);
   if (!match) return null;
   
   const h = parseInt(match[1]);
   const m = parseInt(match[2]);
   const s = parseInt(match[3]);
-  const ms = parseInt(match[4]);
+  // If milliseconds exist, pad right with zeros to make it proper fraction? 
+  // No, parseInt("1") where .1 means 100ms. 
+  // Actually usually .1 in timestamp string means 1ms if strict, but if user types .5 it means 500ms? 
+  // Let's assume standard float parsing logic for the second part.
   
-  return (h * 3600) + (m * 60) + s + (ms / 1000);
+  let seconds = (h * 3600) + (m * 60) + s;
+  
+  if (match[4]) {
+      // If string is .5, it is 500ms. .05 is 50ms. 
+      // match[4] contains digits after dot.
+      // "5" -> 0.5? No, "00:00:00.5" usually means 500ms? 
+      // Standard SRT is 00:00:00,500. 
+      // If user types .5, we treat as 500ms.
+      const msStr = match[4].padEnd(3, '0'); 
+      seconds += parseInt(msStr) / 1000;
+  }
+  
+  return seconds;
 }
