@@ -27,7 +27,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.3.1-openai-fix"; 
+const BUILD_REV = "v2.4.0-drift-fix"; 
 
 // --- Batching Types ---
 interface ScriptLine {
@@ -171,6 +171,7 @@ export default function App() {
       const chunkDuration = (line.endTime || line.startTime) - currentChunk.startTime;
 
       const isSameSpeaker = line.speakerName === currentChunk.speakerName;
+      // Allow slightly tighter gap tolerance for overlapping SRTs
       const isTightGap = gap < 0.6; 
       const isShortEnough = chunkDuration < 15.0; 
 
@@ -245,8 +246,14 @@ export default function App() {
         const chunk = chunks[i];
         setCompletedChunksCount(i);
         
-        // 1. Calculate Silence
+        // 1. Calculate Silence and Drift
+        // If we are ahead of schedule (silenceNeeded > 0), we add silence.
+        // If we are behind schedule (silenceNeeded < 0), we have drift.
         const silenceNeeded = chunk.startTime - currentTimelineTime;
+        
+        // Drift is positive if we are late (currentTimelineTime > chunk.startTime)
+        const drift = Math.max(0, -silenceNeeded);
+
         if (silenceNeeded > 0.05) {
           orderedBuffers.push(createSilentBuffer(audioCtx, silenceNeeded));
           currentTimelineTime += silenceNeeded;
@@ -290,9 +297,6 @@ export default function App() {
                 }
             } else {
                 // OPENAI PATH
-                // Rate Limiting: 1 call every ~7 seconds
-                // If it's not the first chunk (and we just generated something), wait 7 seconds
-                // Note: cache hits don't need waiting.
                 if (newlyGeneratedCount > 0) {
                      setProgressMsg(`OpenAI Rate Limit: Waiting 7s...`);
                      const waitEnd = Date.now() + 7000;
@@ -322,11 +326,17 @@ export default function App() {
                 chunkRawBuffer = await decodeAudioData(audioBytes, audioCtx, 24000);
             }
 
-            // Fit to Duration
+            // Fit to Duration with Drift Compensation
             finalChunkBuffer = chunkRawBuffer;
-            const targetDuration = chunk.endTime - chunk.startTime;
-            if (chunkRawBuffer.duration > (targetDuration + 0.5)) {
-               finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, targetDuration, audioCtx);
+            const nominalDuration = chunk.endTime - chunk.startTime;
+            
+            // If we are late (drift > 0), we reduce the target duration to try and catch up.
+            // But we ensure we don't compress to something impossible (min 0.5s or 50% of nominal)
+            const compensatedTargetDuration = Math.max(nominalDuration * 0.5, nominalDuration - drift);
+            
+            if (chunkRawBuffer.duration > (compensatedTargetDuration + 0.1)) {
+               // We only compress if the raw audio is longer than our compensated target
+               finalChunkBuffer = await fitAudioToMaxDuration(chunkRawBuffer, compensatedTargetDuration, audioCtx);
             }
 
             // Estimate Timings
@@ -442,7 +452,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.3.0',
+      version: '2.4.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,

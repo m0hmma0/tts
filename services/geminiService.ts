@@ -194,23 +194,40 @@ export const generateSpeech = async (
   signal?: AbortSignal
 ): Promise<string | undefined> => {
   
-  const speakerVoiceConfigs = speakers.map((s) => ({
-    speaker: s.name,
-    voiceConfig: {
-      prebuiltVoiceConfig: { voiceName: s.voice },
-    },
-  }));
+  // Explicitly determine configuration based on speaker count.
+  // This prevents Single-Speaker setups from accidentally using Multi-Speaker logic 
+  // which might default to 'Kore' (Female) if the model is confused.
+  let speechConfig;
 
-  const hasMultipleSpeakers = speakers.length > 0;
-  let speechConfig = hasMultipleSpeakers ? {
-    multiSpeakerVoiceConfig: {
-      speakerVoiceConfigs: speakerVoiceConfigs,
-    },
-  } : {
-    voiceConfig: {
-      prebuiltVoiceConfig: { voiceName: 'Kore' },
-    },
-  };
+  if (speakers.length > 1) {
+    // Multi-speaker mode
+    const speakerVoiceConfigs = speakers.map((s) => ({
+      speaker: s.name,
+      voiceConfig: {
+        prebuiltVoiceConfig: { voiceName: s.voice },
+      },
+    }));
+    
+    speechConfig = {
+      multiSpeakerVoiceConfig: {
+        speakerVoiceConfigs: speakerVoiceConfigs,
+      },
+    };
+  } else if (speakers.length === 1) {
+    // Strict Single-speaker mode
+    speechConfig = {
+      voiceConfig: {
+        prebuiltVoiceConfig: { voiceName: speakers[0].voice },
+      },
+    };
+  } else {
+    // Fallback default
+    speechConfig = {
+      voiceConfig: {
+        prebuiltVoiceConfig: { voiceName: 'Kore' },
+      },
+    };
+  }
 
   return executeWithRetryAndRotation(async (ai) => {
     const response = await ai.models.generateContent({
