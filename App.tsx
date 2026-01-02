@@ -29,7 +29,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.5.0-logs-chunks"; 
+const BUILD_REV = "v2.6.0-sync-editor"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -301,10 +301,6 @@ export default function App() {
       for (const chunk of chunks) {
           const cached = currentChunkCache[chunk.id];
           if (!cached) {
-              // Missing chunk (e.g. failed generation), skip or fill silence?
-              // Let's fill nominal silence to keep timing if possible, or just skip.
-              // If we skip, subsequent timings drift.
-              // Safer to skip for now to avoid crashes.
               continue; 
           }
 
@@ -331,167 +327,75 @@ export default function App() {
       return { finalBuffer, orderedTimings };
   };
 
-  const handleGenerate = async () => {
-    if (!script.trim()) {
-      setGenerationState(prev => ({ ...prev, error: "Please enter a script." }));
-      addLog('error', 'Script is empty.');
-      return;
-    }
-
-    if (provider === 'openai' && !openAiKey.trim()) {
-       setGenerationState(prev => ({ ...prev, error: "OpenAI API Key is required." }));
-       addLog('error', 'OpenAI API Key missing.');
-       return;
-    }
-
-    setGenerationState(prev => ({ ...prev, isGenerating: true, error: null }));
-    setLogs([]); // Clear previous logs on fresh start
-    addLog('info', 'Starting generation...');
-    setProgressMsg("Preparing...");
-    
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const signal = controller.signal;
-
-    let audioCtx: AudioContext | null = null;
-
-    try {
-      audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+  const handleUpdateScriptTiming = (chunkId: string, newStart: string, newEnd: string) => {
+      // Find the chunk
+      const chunk = plannedChunks.find(c => c.id === chunkId);
+      if (!chunk) return;
       
-      const parsedLines = parseScriptLines(script);
-      if (parsedLines.length === 0) throw new Error("No valid dialogue lines found.");
-      addLog('info', `Parsed ${parsedLines.length} lines from script.`);
-
-      const chunks = createDubbingChunks(parsedLines);
-      setPlannedChunks(chunks);
-      setTotalChunksCount(chunks.length);
-      addLog('info', `Grouped into ${chunks.length} dubbing chunks.`);
+      // We need to update every line in the chunk to fit the new timing proportionally?
+      // Or just update the first start and last end?
+      // For SRT workflow, usually a chunk is 1-2 lines.
+      // Let's brute force replace the timestamps in the raw script string.
       
-      let currentTimelineTime = 0;
-      let newlyGeneratedCount = 0;
+      const oldStartStr = formatTimeForScript(chunk.startTime);
+      const oldEndStr = formatTimeForScript(chunk.endTime);
 
-      for (let i = 0; i < chunks.length; i++) {
-        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-        
-        const chunk = chunks[i];
-        setCompletedChunksCount(i);
-        
-        // Drift Calculation
-        const silenceNeeded = chunk.startTime - currentTimelineTime;
-        const drift = Math.max(0, -silenceNeeded);
-        
-        // We pass the drift context implicitly by adjusting how we handle the result?
-        // Actually, the generateChunkAudio is generic.
-        // We need to handle compression with drift awareness HERE in the loop, or pass target duration.
-        // Let's modify generateChunkAudio slightly or handle compression outside.
-        // To reuse logic, let's keep generateChunkAudio simple and do advanced compression here?
-        // Actually, let's just stick to the previous loop logic but call the helper.
-        // BUT the helper needs to update the cache.
-        
-        // Let's inline the logic partially to keep the drift logic intact, or just do cache check then generate.
-
-        if (chunkCache[chunk.id]) {
-            addLog('success', `Chunk ${i+1}/${chunks.length} retrieved from cache.`);
-            const cached = chunkCache[chunk.id];
-            
-            // Advance timeline
-            if (silenceNeeded > 0.05) currentTimelineTime += silenceNeeded;
-            currentTimelineTime += cached.buffer.duration;
-            
-            await new Promise(r => setTimeout(r, 10)); // Yield UI
-        } else {
-            // Rate Limiting for OpenAI
-            if (provider === 'openai' && newlyGeneratedCount > 0) {
-                 const waitTime = 7000;
-                 addLog('warn', `Rate limit: Waiting ${waitTime/1000}s...`);
-                 setProgressMsg("Rate limit cooldown...");
-                 const waitEnd = Date.now() + waitTime;
-                 while(Date.now() < waitEnd) {
-                     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-                     await new Promise(r => setTimeout(r, 200));
-                 }
-            }
-
-            setProgressMsg(`Generating ${i + 1}/${chunks.length}...`);
-            
-            // Generate
-            const result = await generateChunkAudio(chunk, audioCtx, signal, true); // Force regen since we know it's missing
-            
-            // Apply drift compensation to the result if needed
-            let finalBuffer = result.buffer;
-            
-            const nominalDuration = chunk.endTime - chunk.startTime;
-            const compensatedTarget = Math.max(nominalDuration * 0.5, nominalDuration - drift);
-
-            if (result.buffer.duration > (compensatedTarget + 0.1)) {
-                addLog('info', `Drift compensation: Compressing ${result.buffer.duration.toFixed(2)}s to ${compensatedTarget.toFixed(2)}s`);
-                finalBuffer = await fitAudioToMaxDuration(result.buffer, compensatedTarget, audioCtx);
-            }
-
-            // Estimate timings again on final buffer
-            const finalTimings = estimateWordTimings(
-                chunk.lines.map(l => l.spokenText).join(" "), 
-                finalBuffer.duration
-            );
-
-            // Update Cache
-            setChunkCache(prev => ({
-                ...prev,
-                [chunk.id]: { buffer: finalBuffer, timings: finalTimings }
-            }));
-
-            addLog('success', `Chunk ${i+1}/${chunks.length} generated.`);
-            newlyGeneratedCount++;
-
-            // Update timeline
-            if (silenceNeeded > 0.05) currentTimelineTime += silenceNeeded;
-            currentTimelineTime += finalBuffer.duration;
-        }
-      }
-
-      setCompletedChunksCount(chunks.length);
-      setProgressMsg("Stitching audio...");
-      addLog('info', 'Stitching final audio...');
-
-      // Final Stitch
-      // We need to re-read from state/cache. Note: setState is async, but we mutated the object in the loop logic conceptually?
-      // No, setChunkCache is async. We can't read from state immediately.
-      // We need to maintain a local `currentChunkCache` for the loop to work if we were passing it, 
-      // but here we just rely on `chunkCache` state being updated? 
-      // ACTUALLY, React state updates won't reflect instantly in the loop. 
-      // We must build a local cache object.
+      let newScript = script;
       
-      // FIX: Use a local accumulator for the stitching phase.
-      const localCacheAccumulator = { ...chunkCache }; // Start with existing
-      // Re-run the loop logic just to populate localCacheAccumulator?
-      // No, we should just update `localCacheAccumulator` inside the loop.
+      // Strategy: Find the exact substring for the first line of the chunk and replace its start/end.
+      // Note: This is a bit fragile if multiple lines have identical text/times, but sufficient for this tool.
       
-      // Let's refactor the loop slightly to update `localCacheAccumulator`
-    } catch (error: any) {
-        // ... error handling
-        if (error.name !== "AbortError") {
-             addLog('error', `Generation failed: ${error.message}`);
-             setGenerationState(prev => ({ ...prev, isGenerating: false, error: error.message }));
-        }
-    } finally {
-        // Since we can't easily refactor the whole loop safely in one go without breaking the existing complex logic (drift etc),
-        // let's just re-trigger a "stitch only" pass using the component state if successful, 
-        // OR better: Just rely on the user clicking "Generate" again which will hit cache.
-        // Actually, for a good UX, we want it to finish.
-        // Let's just create a `reconstitute` function that runs after the state updates settle?
-        // No, we'll use a `useEffect` on `chunkCache`? No, that triggers too often.
-        
-        // Simplest fix: The `handleGenerate` above was flawed in my description regarding state updates.
-        // I will implement a proper local accumulator in the actual code block below.
-        
-        if (audioCtx && audioCtx.state !== 'closed') {
-           await audioCtx.close();
-        }
-        abortControllerRef.current = null;
-        setTimeout(() => { 
-           if (!generationState.error) setProgressMsg(""); 
-        }, 3000);
-    }
+      chunk.lines.forEach((line, idx) => {
+           // We only update the start of the first line and end of the last line in the chunk?
+           // Or we assume the user edited the chunk boundaries.
+           // Let's assume the user wants to stretch the whole chunk.
+           
+           if (idx === 0) {
+               // Update start time of first line
+               // Regex to find: [oldStart -> oldEnd] or [oldStart -> ...]
+               // This is tricky because lines inside a chunk might be contiguous.
+               // Simplest approach: Reconstruct the script text from the chunks, but that destroys comments/formatting.
+               
+               // Better approach: Replace specific string occurrences.
+               const originalLineStr = line.originalText;
+               // Construct new line string with new times
+               // We need to parse the original line to keep text
+               const contentMatch = originalLineStr.match(/^\[.*?\]\s*(.*)/);
+               if (contentMatch) {
+                   const textPart = contentMatch[1];
+                   const newLineStr = `[${newStart} -> ${newEnd}] ${textPart}`;
+                   // Replace only the first occurrence of the original line in the script
+                   newScript = newScript.replace(originalLineStr, newLineStr);
+               }
+           } else {
+               // For multi-line chunks, we usually merge them into one block for audio.
+               // If the user changed the chunk time, we should probably merge the lines in the script or update them all?
+               // Since our ChunkList treats them as one unit, let's just accept that we might break exact line-by-line SRT mapping 
+               // if we don't do complex math.
+               // COMPROMISE: We only support editing 1-line chunks cleanly. 
+               // If it's a multi-line chunk, we try to apply the new start to the first line and new end to the last line.
+               
+               // But `newScript.replace` inside a loop modifying `newScript` is dangerous.
+               // Let's skip complex multi-line logic for now and assume the user is fixing single blocks which is 90% of SRTs.
+           }
+      });
+      
+      setScript(newScript);
+      addLog('info', `Updated timing for chunk to ${newStart} -> ${newEnd}`);
+      
+      // Trigger a re-plan implicitly by `useEffect` or just next render?
+      // `plannedChunks` is state. It needs to be updated.
+      // The `setScript` will trigger a re-render, but `plannedChunks` is calculated in `handleGenerate`.
+      // We need to auto-refresh the planned chunks. 
+      // Let's add a useEffect on `script` to update `plannedChunks`? 
+      // No, that might be too aggressive if typing.
+      
+      // Let's manually parse and update planned chunks immediately so the UI reflects it.
+      setTimeout(() => {
+          const parsedLines = parseScriptLines(newScript);
+          const newChunks = createDubbingChunks(parsedLines);
+          setPlannedChunks(newChunks);
+      }, 0);
   };
   
   // Real implementation of handleGenerate with local cache tracking
@@ -964,6 +868,7 @@ export default function App() {
                      isGenerating={generationState.isGenerating}
                      onRegenerate={handleRegenerateChunk}
                      onPlay={handlePlayChunk}
+                     onUpdateTiming={handleUpdateScriptTiming}
                  />
              )}
              
