@@ -60,50 +60,154 @@ export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBu
   const sampleRate = ctx.sampleRate;
   const length = Math.ceil(safeDuration * sampleRate);
   const buffer = ctx.createBuffer(1, length, sampleRate);
-  // Data is already zeros by default
   return buffer;
 }
 
 /**
- * Resamples an AudioBuffer to fit EXACTLY into a target duration.
+ * SOLA (Synchronized Overlap-Add) Time Stretching Implementation.
+ * This changes the duration of the audio WITHOUT changing the pitch.
+ * 
+ * @param buffer Input AudioBuffer
+ * @param speedRate 1.0 = Normal, 0.5 = Half Speed (2x duration), 2.0 = Double Speed (0.5x duration)
+ */
+function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioContext): AudioBuffer {
+  // Constants for SOLA
+  const SEQUENCE_MS = 20;   // Length of the main processing window
+  const SEEK_MS = 10;       // Length of the search window for phase alignment
+  const OVERLAP_MS = 8;     // Overlap duration
+
+  const sampleRate = buffer.sampleRate;
+  const sequenceSize = Math.floor((SEQUENCE_MS / 1000) * sampleRate);
+  const seekSize = Math.floor((SEEK_MS / 1000) * sampleRate);
+  const overlapSize = Math.floor((OVERLAP_MS / 1000) * sampleRate);
+
+  const numChannels = buffer.numberOfChannels;
+  const inputLength = buffer.length;
+  // Estimated output length
+  const outputLength = Math.floor(inputLength / speedRate);
+  
+  const outputBuffer = ctx.createBuffer(numChannels, outputLength + sequenceSize * 2, sampleRate);
+
+  for (let ch = 0; ch < numChannels; ch++) {
+    const inputData = buffer.getChannelData(ch);
+    const outputData = outputBuffer.getChannelData(ch);
+
+    let inputOffset = 0;
+    let outputOffset = 0;
+
+    // Pre-fill first sequence
+    if (inputLength > sequenceSize) {
+       for (let i = 0; i < sequenceSize; i++) {
+           outputData[i] = inputData[i];
+       }
+       inputOffset = sequenceSize;
+       outputOffset = sequenceSize;
+    }
+
+    while (inputOffset + sequenceSize + seekSize < inputLength && outputOffset + sequenceSize < outputLength) {
+      // 1. Determine the nominal position in the input buffer based on speed
+      // If speed is 2.0, we skip ahead twice as fast in input.
+      // If speed is 0.5, we move slower in input.
+      // Note: SOLA moves output by fixed steps and finds best input match, OR moves input fixed and finds best output match.
+      // Here we implement a standard OLA step:
+      
+      const analysisHop = Math.floor(sequenceSize * speedRate); 
+      
+      // We want to add a new grain at 'outputOffset'.
+      // We look at the 'tail' of the existing output (last 'overlapSize' samples).
+      // We look at the 'head' of the input candidates roughly at 'inputOffset + analysisHop'.
+      
+      // Simplified SOLA:
+      // We advance input by analysisHop.
+      // We search local area for best cross-correlation to align phases.
+      
+      let bestOffset = 0;
+      let maxCorrelation = -1;
+
+      // The region in Input we want to grab roughly
+      const nominalInputStart = Math.floor(inputOffset + analysisHop); 
+      if (nominalInputStart + overlapSize + seekSize >= inputLength) break;
+
+      // Compare the tail of the output (already written) with the head of the input candidate
+      // Tail of output starts at: outputOffset - overlapSize
+      
+      for (let i = 0; i < seekSize; i++) {
+        let correlation = 0;
+        // Calculate cross-correlation for this lag 'i'
+        for (let j = 0; j < overlapSize; j++) {
+           const valOut = outputData[outputOffset - overlapSize + j];
+           const valIn = inputData[nominalInputStart + i + j];
+           correlation += valOut * valIn;
+        }
+        if (correlation > maxCorrelation) {
+          maxCorrelation = correlation;
+          bestOffset = i;
+        }
+      }
+
+      // 2. Mix (Overlap-Add) with the best phase alignment
+      const actualInputStart = nominalInputStart + bestOffset;
+      
+      // Crossfade the overlap region
+      for (let j = 0; j < overlapSize; j++) {
+        const fadeOut = (overlapSize - j) / overlapSize;
+        const fadeIn = j / overlapSize;
+        
+        const existingVal = outputData[outputOffset - overlapSize + j];
+        const newVal = inputData[actualInputStart + j];
+        
+        outputData[outputOffset - overlapSize + j] = (existingVal * fadeOut) + (newVal * fadeIn);
+      }
+
+      // Copy the rest of the sequence
+      for (let j = overlapSize; j < sequenceSize; j++) {
+        if (actualInputStart + j < inputLength) {
+            outputData[outputOffset - overlapSize + j] = inputData[actualInputStart + j];
+        }
+      }
+
+      // Advance
+      outputOffset += (sequenceSize - overlapSize);
+      inputOffset = actualInputStart; // Update true input position
+    }
+  }
+
+  // Trim to exact expected length to clean up tails
+  const trimmed = ctx.createBuffer(numChannels, outputLength, sampleRate);
+  for (let ch = 0; ch < numChannels; ch++) {
+     trimmed.copyToChannel(outputBuffer.getChannelData(ch).subarray(0, outputLength), ch);
+  }
+
+  return trimmed;
+}
+
+/**
+ * Resamples an AudioBuffer to fit EXACTLY into a target duration using Time Stretching (SOLA).
+ * Pitch is preserved.
  * 
  * Logic:
- * - If current < target: Slows down audio (playbackRate < 1.0)
- * - If current > target: Speeds up audio (playbackRate > 1.0)
- * 
- * Note: This uses simple resampling which affects pitch. 
- * For moderate changes (0.8x - 1.2x) this is usually acceptable for speech.
+ * - If current < target: Slows down audio (Stretch)
+ * - If current > target: Speeds up audio (Compress)
  */
 export async function fitAudioToTargetDuration(
   buffer: AudioBuffer,
   targetDuration: number,
   ctx: AudioContext
 ): Promise<{ buffer: AudioBuffer; ratio: number }> {
-  // Tolerance to avoid unnecessary processing for sub-millisecond differences
+  // Tolerance to avoid unnecessary processing
   if (Math.abs(buffer.duration - targetDuration) < 0.05) {
       return { buffer, ratio: 1.0 };
   }
 
-  // Calculate ratio. 
-  // e.g. Buffer = 10s, Target = 5s. Ratio = 2.0 (Play twice as fast)
-  // e.g. Buffer = 5s, Target = 10s. Ratio = 0.5 (Play half speed)
+  // Calculate speed ratio.
+  // Example: Buffer=10s, Target=5s. We need to play 2x faster. Speed = 2.0.
+  // Example: Buffer=5s, Target=10s. We need to play 0.5x speed. Speed = 0.5.
   const ratio = buffer.duration / targetDuration;
-  
-  // Use OfflineAudioContext to render the retimed audio
-  const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(
-    buffer.numberOfChannels,
-    Math.ceil(targetDuration * ctx.sampleRate),
-    ctx.sampleRate
-  );
 
-  const source = offlineCtx.createBufferSource();
-  source.buffer = buffer;
-  source.playbackRate.value = ratio;
-  source.connect(offlineCtx.destination);
-  source.start(0);
+  // Run SOLA algorithm
+  const stretchedBuffer = solaTimeStretch(buffer, ratio, ctx);
 
-  const renderedBuffer = await offlineCtx.startRendering();
-  return { buffer: renderedBuffer, ratio };
+  return { buffer: stretchedBuffer, ratio };
 }
 
 /**

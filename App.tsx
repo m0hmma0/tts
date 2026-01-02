@@ -29,7 +29,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.8.0-bidirectional-sync"; 
+const BUILD_REV = "v2.9.0-sola-sync"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -299,13 +299,6 @@ export default function App() {
              currentTimelineTime += silenceNeeded;
           }
 
-          // In case of slight overlap (negative silenceNeeded) due to precision,
-          // the concatenation utility doesn't support mixing, it just appends.
-          // Since we fitted the audio, the drift should be negligible.
-          // If silenceNeeded is negative, we technically should cross-fade or cut.
-          // For now, we assume simple appending works because we fitted the duration.
-          // The visual timeline might be 1ms off but audio is contiguous.
-
           const offsetTimings = cached.timings.map(t => ({
             word: t.word,
             start: t.start + currentTimelineTime,
@@ -403,17 +396,17 @@ export default function App() {
                  // Generate raw
                  const result = await generateChunkAudio(chunk, audioCtx, signal, true);
                  
-                 // PERFECT SYNC: STRETCH OR COMPRESS
+                 // PERFECT SYNC: STRETCH OR COMPRESS WITH PITCH PRESERVATION (SOLA)
                  const targetDuration = chunk.endTime - chunk.startTime;
                  const rawDuration = result.buffer.duration;
                  
-                 // Apply fitting logic
+                 // Apply fitting logic (internally uses SOLA)
                  const { buffer: finalBuffer, ratio } = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
                  
                  if (ratio > 1.05) {
-                     addLog('warn', `  ↳ Too long (${rawDuration.toFixed(2)}s). Speeding up ${ratio.toFixed(2)}x to fit.`);
+                     addLog('warn', `  ↳ Too long (${rawDuration.toFixed(2)}s). Time-stretching ${ratio.toFixed(2)}x faster (Pitch Locked).`);
                  } else if (ratio < 0.95) {
-                     addLog('info', `  ↳ Too short (${rawDuration.toFixed(2)}s). Slowing down ${ratio.toFixed(2)}x to fill.`);
+                     addLog('info', `  ↳ Too short (${rawDuration.toFixed(2)}s). Time-stretching ${ratio.toFixed(2)}x slower (Pitch Locked).`);
                  }
                  
                  const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
@@ -468,11 +461,11 @@ export default function App() {
           // Force generate
           const result = await generateChunkAudio(chunk, audioCtx, signal, true);
           
-          // STRICT SYNC BIDIRECTIONAL
+          // STRICT SYNC BIDIRECTIONAL WITH PITCH LOCK
           const targetDuration = chunk.endTime - chunk.startTime;
           const { buffer: finalBuffer, ratio } = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
 
-          addLog('success', `Applied ${ratio.toFixed(2)}x speed to fit window.`);
+          addLog('success', `Applied ${ratio.toFixed(2)}x time-stretch (Pitch Locked) to fit window.`);
           
           const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
 
@@ -570,7 +563,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.8.0',
+      version: '2.9.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,
