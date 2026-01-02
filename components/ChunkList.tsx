@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { DubbingChunk, AudioCacheItem, WordTiming } from '../types';
-import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge } from 'lucide-react';
+import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge, RefreshCw } from 'lucide-react';
 import { formatTimeForScript, parseScriptTimestamp } from '../utils/srtUtils';
 
 interface ChunkListProps {
@@ -127,9 +127,20 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                         </button>
                                     </>
                                 ) : (
-                                    <div className="flex items-center gap-1 text-slate-400 text-xs italic">
-                                        <Loader2 size={14} className="animate-spin" />
-                                    </div>
+                                    // If not cached, verify if it's truly generating or just empty
+                                    isGenerating ? (
+                                        <div className="flex items-center gap-1 text-slate-400 text-xs italic">
+                                            <Loader2 size={14} className="animate-spin" />
+                                        </div>
+                                    ) : (
+                                        <button 
+                                            onClick={() => onRegenerate(chunk)}
+                                            className="p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors flex items-center gap-2 text-xs font-semibold"
+                                            title="Generate Audio for this new duration"
+                                        >
+                                            <RefreshCw size={14} /> Generate
+                                        </button>
+                                    )
                                 )}
                             </div>
                         </div>

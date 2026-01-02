@@ -30,7 +30,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.0-timeline-fix"; 
+const BUILD_REV = "v2.11.1-logsave"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -558,7 +558,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.0',
+      version: '2.11.1',
       timestamp: new Date().toISOString(),
       script,
       speakers,
@@ -567,7 +567,8 @@ export default function App() {
       chunkCache: serializedChunkCache,
       fullAudio: serializedFullAudio,
       fullTimings: generationState.timings,
-      plannedChunks 
+      plannedChunks,
+      logs // Save Logs
     };
     
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -579,7 +580,7 @@ export default function App() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    addLog('success', 'Project saved.');
+    addLog('success', 'Project saved with logs.');
   };
 
   const handleLoadProject = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -599,6 +600,16 @@ export default function App() {
             
             if (data.provider) setProvider(data.provider);
             if (data.plannedChunks) setPlannedChunks(data.plannedChunks);
+
+            // Restore Logs if available
+            if (data.logs && Array.isArray(data.logs)) {
+                // Rehydrate dates
+                const restoredLogs = data.logs.map((l: any) => ({
+                    ...l,
+                    timestamp: new Date(l.timestamp)
+                }));
+                setLogs(restoredLogs);
+            }
 
             const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
             
