@@ -64,121 +64,123 @@ export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBu
 }
 
 /**
- * SOLA (Synchronized Overlap-Add) Time Stretching Implementation.
- * This changes the duration of the audio WITHOUT changing the pitch.
+ * Improved SOLA (Synchronized Overlap-Add) Time Stretching.
+ * Uses larger grain sizes and windowing to reduce robotic artifacts in speech.
  * 
  * @param buffer Input AudioBuffer
  * @param speedRate 1.0 = Normal, 0.5 = Half Speed (2x duration), 2.0 = Double Speed (0.5x duration)
  */
 function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioContext): AudioBuffer {
-  // Constants for SOLA
-  const SEQUENCE_MS = 20;   // Length of the main processing window
-  const SEEK_MS = 10;       // Length of the search window for phase alignment
-  const OVERLAP_MS = 8;     // Overlap duration
-
+  // Tuned parameters for speech (High Quality)
+  // Larger windows (60ms) capture pitch periods of low voices better than 20ms
+  const GRAIN_SIZE_S = 0.060; 
+  const OVERLAP_S = 0.015;    
+  const SEARCH_S = 0.015;     
+  
   const sampleRate = buffer.sampleRate;
-  const sequenceSize = Math.floor((SEQUENCE_MS / 1000) * sampleRate);
-  const seekSize = Math.floor((SEEK_MS / 1000) * sampleRate);
-  const overlapSize = Math.floor((OVERLAP_MS / 1000) * sampleRate);
-
   const numChannels = buffer.numberOfChannels;
   const inputLength = buffer.length;
-  // Estimated output length
-  const outputLength = Math.floor(inputLength / speedRate);
   
-  const outputBuffer = ctx.createBuffer(numChannels, outputLength + sequenceSize * 2, sampleRate);
-
+  // Calculate sizes in samples
+  const grainSize = Math.floor(GRAIN_SIZE_S * sampleRate);
+  const overlapSize = Math.floor(OVERLAP_S * sampleRate);
+  const searchSize = Math.floor(SEARCH_S * sampleRate);
+  
+  // The step size for the OUTPUT buffer
+  // We place grains at fixed intervals in the output
+  const outputStep = grainSize - overlapSize;
+  
+  // The step size for the INPUT buffer (nominal)
+  // If speed > 1, we step through input faster
+  const inputStep = Math.floor(outputStep * speedRate);
+  
+  // Estimated output length
+  const outputLength = Math.ceil(inputLength / speedRate);
+  
+  // Create output buffer (with some padding for processing)
+  const outputBuffer = ctx.createBuffer(numChannels, outputLength + grainSize, sampleRate);
+  
+  // We process each channel. 
   for (let ch = 0; ch < numChannels; ch++) {
     const inputData = buffer.getChannelData(ch);
     const outputData = outputBuffer.getChannelData(ch);
-
-    let inputOffset = 0;
-    let outputOffset = 0;
-
-    // Pre-fill first sequence
-    if (inputLength > sequenceSize) {
-       for (let i = 0; i < sequenceSize; i++) {
-           outputData[i] = inputData[i];
-       }
-       inputOffset = sequenceSize;
-       outputOffset = sequenceSize;
+    
+    // Copy first grain directly
+    if (inputLength > grainSize) {
+        outputData.set(inputData.subarray(0, grainSize), 0);
     }
-
-    while (inputOffset + sequenceSize + seekSize < inputLength && outputOffset + sequenceSize < outputLength) {
-      // 1. Determine the nominal position in the input buffer based on speed
-      // If speed is 2.0, we skip ahead twice as fast in input.
-      // If speed is 0.5, we move slower in input.
-      // Note: SOLA moves output by fixed steps and finds best input match, OR moves input fixed and finds best output match.
-      // Here we implement a standard OLA step:
-      
-      const analysisHop = Math.floor(sequenceSize * speedRate); 
-      
-      // We want to add a new grain at 'outputOffset'.
-      // We look at the 'tail' of the existing output (last 'overlapSize' samples).
-      // We look at the 'head' of the input candidates roughly at 'inputOffset + analysisHop'.
-      
-      // Simplified SOLA:
-      // We advance input by analysisHop.
-      // We search local area for best cross-correlation to align phases.
-      
-      let bestOffset = 0;
-      let maxCorrelation = -1;
-
-      // The region in Input we want to grab roughly
-      const nominalInputStart = Math.floor(inputOffset + analysisHop); 
-      if (nominalInputStart + overlapSize + seekSize >= inputLength) break;
-
-      // Compare the tail of the output (already written) with the head of the input candidate
-      // Tail of output starts at: outputOffset - overlapSize
-      
-      for (let i = 0; i < seekSize; i++) {
-        let correlation = 0;
-        // Calculate cross-correlation for this lag 'i'
+    
+    let outputOffset = outputStep;
+    let inputOffset = inputStep; // Nominal position in input
+    
+    while (outputOffset + grainSize < outputLength && inputOffset + grainSize + searchSize < inputLength) {
+        // 1. Find Best Overlap
+        // We look for the best match for the "Overlap Region"
+        // The tail of the output buffer vs the head of the candidate input grains
+        
+        let bestOffset = 0;
+        let bestCorrelation = -Infinity;
+        
+        // We search around the nominal inputOffset
+        // Limit search to avoid going out of bounds
+        const searchLimit = (inputOffset + searchSize + grainSize < inputLength) ? searchSize : 0;
+        
+        for (let i = 0; i < searchLimit; i++) {
+            let correlation = 0;
+            // Calculate cross-correlation for alignment
+            // Optimization: check every 2nd sample for speed if needed, but full is better for quality
+            for (let j = 0; j < overlapSize; j += 2) {
+                const valOut = outputData[outputOffset + j]; // This data comes from the TAIL of the previous grain
+                const valIn = inputData[inputOffset + i + j];
+                correlation += valOut * valIn;
+            }
+            if (correlation > bestCorrelation) {
+                bestCorrelation = correlation;
+                bestOffset = i;
+            }
+        }
+        
+        const actualInputPos = inputOffset + bestOffset;
+        
+        // 2. Overlap-Add (Cross-fade)
+        // We blend the existing tail of output with the head of the new input grain
         for (let j = 0; j < overlapSize; j++) {
-           const valOut = outputData[outputOffset - overlapSize + j];
-           const valIn = inputData[nominalInputStart + i + j];
-           correlation += valOut * valIn;
+            // Hanning-like window for smoother transition
+            // 0 to 1
+            const phase = j / overlapSize; 
+            const weightNew = 0.5 * (1 - Math.cos(Math.PI * phase)); // Ease in
+            const weightOld = 1 - weightNew; // Ease out
+            
+            const existingVal = outputData[outputOffset + j];
+            const newVal = inputData[actualInputPos + j];
+            
+            outputData[outputOffset + j] = (existingVal * weightOld) + (newVal * weightNew);
         }
-        if (correlation > maxCorrelation) {
-          maxCorrelation = correlation;
-          bestOffset = i;
-        }
-      }
-
-      // 2. Mix (Overlap-Add) with the best phase alignment
-      const actualInputStart = nominalInputStart + bestOffset;
-      
-      // Crossfade the overlap region
-      for (let j = 0; j < overlapSize; j++) {
-        const fadeOut = (overlapSize - j) / overlapSize;
-        const fadeIn = j / overlapSize;
         
-        const existingVal = outputData[outputOffset - overlapSize + j];
-        const newVal = inputData[actualInputStart + j];
-        
-        outputData[outputOffset - overlapSize + j] = (existingVal * fadeOut) + (newVal * fadeIn);
-      }
-
-      // Copy the rest of the sequence
-      for (let j = overlapSize; j < sequenceSize; j++) {
-        if (actualInputStart + j < inputLength) {
-            outputData[outputOffset - overlapSize + j] = inputData[actualInputStart + j];
+        // 3. Copy the rest of the grain
+        // The part after the overlap
+        const remainingSamples = grainSize - overlapSize;
+        if (actualInputPos + overlapSize + remainingSamples < inputLength) {
+             const startIn = actualInputPos + overlapSize;
+             const startOut = outputOffset + overlapSize;
+             // Use set for speed
+             outputData.set(inputData.subarray(startIn, startIn + remainingSamples), startOut);
         }
-      }
-
-      // Advance
-      outputOffset += (sequenceSize - overlapSize);
-      inputOffset = actualInputStart; // Update true input position
+        
+        // Advance
+        outputOffset += outputStep;
+        inputOffset += inputStep; 
     }
   }
 
-  // Trim to exact expected length to clean up tails
-  const trimmed = ctx.createBuffer(numChannels, outputLength, sampleRate);
+  // Final Cleanup: Trim to exact target length
+  const finalBuffer = ctx.createBuffer(numChannels, outputLength, sampleRate);
   for (let ch = 0; ch < numChannels; ch++) {
-     trimmed.copyToChannel(outputBuffer.getChannelData(ch).subarray(0, outputLength), ch);
+      const data = outputBuffer.getChannelData(ch).subarray(0, outputLength);
+      finalBuffer.copyToChannel(data, ch);
   }
-
-  return trimmed;
+  
+  return finalBuffer;
 }
 
 /**
@@ -199,12 +201,9 @@ export async function fitAudioToTargetDuration(
       return { buffer, ratio: 1.0 };
   }
 
-  // Calculate speed ratio.
-  // Example: Buffer=10s, Target=5s. We need to play 2x faster. Speed = 2.0.
-  // Example: Buffer=5s, Target=10s. We need to play 0.5x speed. Speed = 0.5.
   const ratio = buffer.duration / targetDuration;
 
-  // Run SOLA algorithm
+  // Run improved SOLA algorithm
   const stretchedBuffer = solaTimeStretch(buffer, ratio, ctx);
 
   return { buffer: stretchedBuffer, ratio };
