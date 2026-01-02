@@ -45,3 +45,28 @@ export interface GenerationState {
   audioBuffer: AudioBuffer | null;
   timings: WordTiming[] | null;
 }
+
+export interface LogEntry {
+  id: string;
+  timestamp: Date;
+  level: 'info' | 'warn' | 'error' | 'success';
+  message: string;
+}
+
+// --- Batching Types ---
+export interface ScriptLine {
+  originalText: string;
+  speakerName: string;
+  spokenText: string;
+  startTime: number;
+  endTime: number | null;
+}
+
+export interface DubbingChunk {
+  id: string; // Unique hash for caching
+  speakerName: string;
+  lines: ScriptLine[];
+  startTime: number;
+  endTime: number;
+  textHash: string;
+}
