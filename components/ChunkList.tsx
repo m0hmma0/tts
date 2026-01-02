@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { DubbingChunk, AudioCacheItem, WordTiming } from '../types';
-import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge, RefreshCw } from 'lucide-react';
+import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge, RefreshCw, X } from 'lucide-react';
 import { formatTimeForScript, parseScriptTimestamp } from '../utils/srtUtils';
 
 interface ChunkListProps {
@@ -26,6 +26,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
   
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
+  const [editSpeed, setEditSpeed] = useState<string>("1.00");
 
   const handlePlay = (chunkId: string, buffer: AudioBuffer) => {
     setPlayingId(chunkId);
@@ -39,6 +40,13 @@ export const ChunkList: React.FC<ChunkListProps> = ({
       setEditingId(chunk.id);
       setEditStart(formatTimeForScript(chunk.startTime));
       setEditEnd(formatTimeForScript(chunk.endTime));
+      
+      const cached = chunkCache[chunk.id];
+      if (cached && cached.ratio) {
+          setEditSpeed(cached.ratio.toFixed(2));
+      } else {
+          setEditSpeed("1.00");
+      }
   };
 
   const saveEditing = (chunkId: string) => {
@@ -48,6 +56,36 @@ export const ChunkList: React.FC<ChunkListProps> = ({
 
   const cancelEditing = () => {
       setEditingId(null);
+  };
+
+  // Auto-calculate End Time when Speed changes
+  const handleSpeedChange = (newSpeedStr: string, chunkId: string) => {
+      setEditSpeed(newSpeedStr);
+      
+      const speed = parseFloat(newSpeedStr);
+      const cached = chunkCache[chunkId];
+      
+      if (!isNaN(speed) && speed > 0 && cached) {
+          // Natural duration of the raw audio (approximate from buffer / current ratio)
+          // Actually we stored the fitted buffer. 
+          // To get natural duration, we need: CurrentDuration * CurrentRatio
+          // But wait, cached.buffer is ALREADY stretched. 
+          // We can't easily get original duration unless we store it.
+          // However, we can approximate: If Ratio is 1.0, duration is natural.
+          // If Ratio is 2.0, duration is 0.5 * Natural. So Natural = Duration * Ratio.
+          
+          const currentDuration = cached.buffer.duration;
+          const currentRatio = cached.ratio || 1.0;
+          const naturalDuration = currentDuration * currentRatio;
+          
+          const newTargetDuration = naturalDuration / speed;
+          
+          const startSecs = parseScriptTimestamp(editStart);
+          if (startSecs !== null) {
+              const newEndSecs = startSecs + newTargetDuration;
+              setEditEnd(formatTimeForScript(newEndSecs));
+          }
+      }
   };
 
   if (chunks.length === 0) return null;
@@ -160,69 +198,84 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                         {/* Timing Row */}
                         <div className="ml-9 flex flex-wrap items-center gap-4 bg-slate-100/50 p-2 rounded-lg">
                             {isEditing ? (
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center gap-3 w-full">
                                     <div className="flex flex-col">
                                         <label className="text-[9px] uppercase text-slate-500 font-bold mb-0.5">Start</label>
                                         <input 
                                             type="text" 
                                             value={editStart}
                                             onChange={(e) => setEditStart(e.target.value)}
-                                            className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-0.5 focus:border-indigo-500 outline-none"
+                                            className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-1 focus:border-indigo-500 outline-none"
                                         />
                                     </div>
+                                    
                                     <span className="text-slate-400 mt-4">→</span>
+                                    
                                     <div className="flex flex-col">
                                         <label className="text-[9px] uppercase text-slate-500 font-bold mb-0.5">End</label>
                                         <input 
                                             type="text" 
                                             value={editEnd}
                                             onChange={(e) => setEditEnd(e.target.value)}
-                                            className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-0.5 focus:border-indigo-500 outline-none"
+                                            className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-1 focus:border-indigo-500 outline-none"
                                         />
                                     </div>
-                                    <div className="flex items-center gap-1 mt-4">
-                                        <button onClick={() => saveEditing(chunk.id)} className="text-emerald-600 hover:bg-emerald-50 p-1.5 rounded"><Check size={14} /></button>
-                                        <button onClick={cancelEditing} className="text-red-500 hover:bg-red-50 p-1.5 rounded"><RotateCcw size={14} /></button>
+
+                                    {/* Speed Input */}
+                                    {cached && (
+                                        <div className="flex flex-col ml-2 border-l pl-3 border-slate-200">
+                                            <label className="text-[9px] uppercase text-slate-500 font-bold mb-0.5 text-indigo-600">Speed (x)</label>
+                                            <input 
+                                                type="number" 
+                                                step="0.05"
+                                                min="0.1"
+                                                max="4.0"
+                                                value={editSpeed}
+                                                onChange={(e) => handleSpeedChange(e.target.value, chunk.id)}
+                                                className="w-16 text-xs font-mono border border-indigo-200 bg-indigo-50 text-indigo-700 rounded px-1 py-1 focus:border-indigo-500 outline-none font-bold"
+                                            />
+                                        </div>
+                                    )}
+
+                                    <div className="flex items-center gap-1 ml-auto mt-4">
+                                        <button onClick={() => saveEditing(chunk.id)} className="bg-emerald-500 hover:bg-emerald-600 text-white p-1.5 rounded transition-colors shadow-sm"><Check size={14} /></button>
+                                        <button onClick={cancelEditing} className="bg-white border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-500 p-1.5 rounded transition-colors shadow-sm"><X size={14} /></button>
                                     </div>
                                 </div>
                             ) : (
-                                <div className="flex items-center gap-2 group/time cursor-pointer" onClick={() => startEditing(chunk)} title="Edit Target Duration (Constraints)">
-                                    <Lock size={10} className="text-slate-400" />
-                                    <span className="text-xs font-mono text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded group-hover/time:border-indigo-300 transition-colors">
+                                <div className="flex items-center gap-2 group/time cursor-pointer hover:bg-white/50 rounded px-1" onClick={() => startEditing(chunk)} title="Click to Edit Timing & Speed">
+                                    <Lock size={10} className="text-slate-400 group-hover/time:text-indigo-500" />
+                                    <span className="text-xs font-mono text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded bg-white group-hover/time:border-indigo-300 transition-colors">
                                         {formatTimeForScript(chunk.startTime)}
                                     </span>
                                     <span className="text-slate-300">→</span>
-                                    <span className="text-xs font-mono text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded group-hover/time:border-indigo-300 transition-colors">
+                                    <span className="text-xs font-mono text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded bg-white group-hover/time:border-indigo-300 transition-colors">
                                         {formatTimeForScript(chunk.endTime)}
                                     </span>
                                 </div>
                             )}
 
-                            <div className="h-4 w-px bg-slate-300"></div>
-
-                            <div className="flex items-center gap-3 text-xs">
-                                <div className="flex flex-col">
-                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Target</span>
-                                    <span className={`font-mono ${isEditing ? 'text-indigo-600 font-bold' : ''}`}>{targetDuration.toFixed(2)}s</span>
-                                </div>
-                                
-                                <div className="flex flex-col">
-                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Generated</span>
-                                    <span className={`font-mono font-bold text-slate-600`}>
-                                        {displayedDuration > 0 ? displayedDuration.toFixed(2) + 's' : '--'}
-                                    </span>
-                                </div>
-
-                                {cached && (
-                                    <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1 ${
-                                        isCompressed ? 'bg-amber-100 text-amber-700' : 
-                                        isStretched ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-600'
-                                    }`}>
-                                        <Gauge size={10} />
-                                        {ratio.toFixed(2)}x Speed
+                            {!isEditing && (
+                                <>
+                                    <div className="h-4 w-px bg-slate-300 hidden sm:block"></div>
+                                    <div className="flex items-center gap-3 text-xs">
+                                        <div className="flex flex-col">
+                                            <span className="text-[10px] text-slate-400 uppercase font-bold">Target</span>
+                                            <span className="font-mono">{targetDuration.toFixed(2)}s</span>
+                                        </div>
+                                        
+                                        {cached && (
+                                            <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1 ${
+                                                isCompressed ? 'bg-amber-100 text-amber-700' : 
+                                                isStretched ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-600'
+                                            }`}>
+                                                <Gauge size={10} />
+                                                {ratio.toFixed(2)}x
+                                            </div>
+                                        )}
                                     </div>
-                                )}
-                            </div>
+                                </>
+                            )}
                         </div>
                     </div>
                 );

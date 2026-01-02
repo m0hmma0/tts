@@ -30,7 +30,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.3-syncfix"; 
+const BUILD_REV = "v2.11.4-speedcontrol"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -336,45 +336,57 @@ export default function App() {
   };
 
   const handleUpdateScriptTiming = (chunkId: string, newStart: string, newEnd: string) => {
-      // Find the chunk
+      // Find the chunk in the planned array
       const chunk = plannedChunks.find(c => c.id === chunkId);
       if (!chunk) return;
       
-      let newScript = script;
-      let updated = false;
-
-      // Normalize inputs to ensure they match standard script format
       const safeStart = normalizeTimestamp(newStart);
       const safeEnd = normalizeTimestamp(newEnd);
 
-      chunk.lines.forEach((line, idx) => {
-           if (idx === 0) {
-               // Update start time of first line
-               const originalLineStr = line.originalText;
-               const contentMatch = originalLineStr.match(/^\[.*?\]\s*(.*)/);
-               if (contentMatch) {
-                   const textPart = contentMatch[1];
-                   const newLineStr = `[${safeStart} -> ${safeEnd}] ${textPart}`;
-                   if (newScript.includes(originalLineStr)) {
-                       newScript = newScript.replace(originalLineStr, newLineStr);
-                       updated = true;
-                   } else {
-                       addLog('warn', 'Could not find original line in script. Script might have changed manually.');
-                   }
-               }
-           }
-      });
+      // We need to robustly find the line in the CURRENT script.
+      // The chunk.lines[0].originalText might be stale if user edited text.
+      // Strategy: Search for the line containing the speaker and spoken text.
+      const currentLines = script.split('\n');
       
-      if (updated) {
+      // Use the first line of the chunk for identification
+      const targetSpeaker = chunk.speakerName;
+      const targetText = chunk.lines[0].spokenText;
+
+      let foundIndex = -1;
+
+      // Try to find the matching line index
+      for (let i = 0; i < currentLines.length; i++) {
+          const line = currentLines[i];
+          // Simple heuristic: Does line contain Speaker AND Text?
+          // We also ignore the timestamp part in the check to avoid circular failure
+          if (line.includes(targetSpeaker) && line.includes(targetText)) {
+              foundIndex = i;
+              break;
+          }
+      }
+
+      if (foundIndex !== -1) {
+          const originalLine = currentLines[foundIndex];
+          // Reconstruct the line with new timestamp
+          // Format: [START -> END] Speaker: Text
+          // We preserve the text part exactly as it is in the current script (after the timestamp bracket)
+          const textMatch = originalLine.match(/^\[.*?\]\s*(.*)/);
+          const contentPart = textMatch ? textMatch[1] : originalLine;
+          
+          const newLine = `[${safeStart} -> ${safeEnd}] ${contentPart}`;
+          
+          currentLines[foundIndex] = newLine;
+          const newScript = currentLines.join('\n');
+          
           setScript(newScript);
-          addLog('info', `Updated timing constraint: ${safeStart} -> ${safeEnd}`);
-          // Force update planned chunks immediately instead of waiting for useEffect
-          // to make UI feel responsive
+          addLog('info', `Updated timing: ${safeStart} -> ${safeEnd}`);
+          
+          // Optimistically update planned chunks to prevent UI flicker
           const parsedLines = parseScriptLines(newScript);
           const newChunks = createDubbingChunks(parsedLines);
           setPlannedChunks(newChunks);
       } else {
-          addLog('error', 'Failed to update script. Please try manually editing.');
+          addLog('error', 'Could not locate line in script to update timing. Try editing manually.');
       }
   };
   
@@ -594,7 +606,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.3',
+      version: '2.11.4',
       timestamp: new Date().toISOString(),
       script,
       speakers,
