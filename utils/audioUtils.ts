@@ -65,17 +65,32 @@ export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBu
 
 /**
  * Improved SOLA (Synchronized Overlap-Add) Time Stretching.
- * Uses larger grain sizes and windowing to reduce robotic artifacts in speech.
+ * Uses ADAPTIVE grain sizes to handle both speeding up and slowing down naturally.
  * 
  * @param buffer Input AudioBuffer
  * @param speedRate 1.0 = Normal, 0.5 = Half Speed (2x duration), 2.0 = Double Speed (0.5x duration)
  */
 function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioContext): AudioBuffer {
-  // Tuned parameters for speech (High Quality)
-  // Larger windows capture pitch periods of low voices better
-  const GRAIN_SIZE_S = 0.075; // 75ms grain
-  const OVERLAP_S = 0.025;    // 25ms overlap
-  const SEARCH_S = 0.020;     // 20ms search window
+  // Adaptive Parameters
+  // When speeding up (>1), we need smaller grains to avoid skipping entire phonemes (stops pitch distortion/skipping artifacts).
+  // When slowing down (<1), larger grains preserve low frequency pitch better.
+  
+  let GRAIN_SIZE_S;
+  let OVERLAP_S;
+  
+  if (speedRate > 1.0) {
+      // Compression (Speed Up)
+      // Use smaller grains (e.g., 35-40ms)
+      GRAIN_SIZE_S = 0.040; 
+      OVERLAP_S = 0.010;
+  } else {
+      // Expansion (Slow Down)
+      // Use larger grains (e.g., 80ms) for stability
+      GRAIN_SIZE_S = 0.080;
+      OVERLAP_S = 0.020;
+  }
+
+  const SEARCH_S = 0.015;     
   
   const sampleRate = buffer.sampleRate;
   const numChannels = buffer.numberOfChannels;
@@ -86,51 +101,35 @@ function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioConte
   const overlapSize = Math.floor(OVERLAP_S * sampleRate);
   const searchSize = Math.floor(SEARCH_S * sampleRate);
   
-  // The step size for the OUTPUT buffer
-  // We place grains at fixed intervals in the output
   const outputStep = grainSize - overlapSize;
-  
-  // The step size for the INPUT buffer (nominal)
-  // If speed > 1, we step through input faster
   const inputStep = Math.floor(outputStep * speedRate);
-  
-  // Estimated output length
   const outputLength = Math.ceil(inputLength / speedRate);
   
-  // Create output buffer (with some padding for processing)
   const outputBuffer = ctx.createBuffer(numChannels, outputLength + grainSize, sampleRate);
   
-  // We process each channel. 
   for (let ch = 0; ch < numChannels; ch++) {
     const inputData = buffer.getChannelData(ch);
     const outputData = outputBuffer.getChannelData(ch);
     
-    // Copy first grain directly
     if (inputLength > grainSize) {
         outputData.set(inputData.subarray(0, grainSize), 0);
     }
     
     let outputOffset = outputStep;
-    let inputOffset = inputStep; // Nominal position in input
+    let inputOffset = inputStep; 
     
     while (outputOffset + grainSize < outputLength && inputOffset + grainSize + searchSize < inputLength) {
-        // 1. Find Best Overlap
-        // We look for the best match for the "Overlap Region"
-        // The tail of the output buffer vs the head of the candidate input grains
-        
         let bestOffset = 0;
         let bestCorrelation = -Infinity;
         
-        // We search around the nominal inputOffset
-        // Limit search to avoid going out of bounds
         const searchLimit = (inputOffset + searchSize + grainSize < inputLength) ? searchSize : 0;
         
+        // Coarse search first for performance if search is large, 
+        // but here search is small so full search is fine.
         for (let i = 0; i < searchLimit; i++) {
             let correlation = 0;
-            // Calculate cross-correlation for alignment
-            // Optimization: check every 2nd sample for speed if needed, but full is better for quality
-            for (let j = 0; j < overlapSize; j += 2) {
-                const valOut = outputData[outputOffset + j]; // This data comes from the TAIL of the previous grain
+            for (let j = 0; j < overlapSize; j += 4) { // Optimization: check every 4th sample
+                const valOut = outputData[outputOffset + j]; 
                 const valIn = inputData[inputOffset + i + j];
                 correlation += valOut * valIn;
             }
@@ -142,14 +141,11 @@ function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioConte
         
         const actualInputPos = inputOffset + bestOffset;
         
-        // 2. Overlap-Add (Cross-fade)
-        // We blend the existing tail of output with the head of the new input grain
+        // Overlap-Add with Hanning window
         for (let j = 0; j < overlapSize; j++) {
-            // Hanning-like window for smoother transition
-            // 0 to 1
             const phase = j / overlapSize; 
-            const weightNew = 0.5 * (1 - Math.cos(Math.PI * phase)); // Ease in
-            const weightOld = 1 - weightNew; // Ease out
+            const weightNew = 0.5 * (1 - Math.cos(Math.PI * phase)); 
+            const weightOld = 1 - weightNew; 
             
             const existingVal = outputData[outputOffset + j];
             const newVal = inputData[actualInputPos + j];
@@ -157,23 +153,19 @@ function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioConte
             outputData[outputOffset + j] = (existingVal * weightOld) + (newVal * weightNew);
         }
         
-        // 3. Copy the rest of the grain
-        // The part after the overlap
         const remainingSamples = grainSize - overlapSize;
         if (actualInputPos + overlapSize + remainingSamples < inputLength) {
              const startIn = actualInputPos + overlapSize;
              const startOut = outputOffset + overlapSize;
-             // Use set for speed
              outputData.set(inputData.subarray(startIn, startIn + remainingSamples), startOut);
         }
         
-        // Advance
         outputOffset += outputStep;
         inputOffset += inputStep; 
     }
   }
 
-  // Final Cleanup: Trim to exact target length
+  // Final Cleanup
   const finalBuffer = ctx.createBuffer(numChannels, outputLength, sampleRate);
   for (let ch = 0; ch < numChannels; ch++) {
       const data = outputBuffer.getChannelData(ch).subarray(0, outputLength);
@@ -186,10 +178,6 @@ function solaTimeStretch(buffer: AudioBuffer, speedRate: number, ctx: AudioConte
 /**
  * Resamples an AudioBuffer to fit EXACTLY into a target duration using Time Stretching (SOLA).
  * Pitch is preserved.
- * 
- * Logic:
- * - If current < target: Slows down audio (Stretch)
- * - If current > target: Speeds up audio (Compress)
  */
 export async function fitAudioToTargetDuration(
   buffer: AudioBuffer,
@@ -207,6 +195,52 @@ export async function fitAudioToTargetDuration(
   const stretchedBuffer = solaTimeStretch(buffer, ratio, ctx);
 
   return { buffer: stretchedBuffer, ratio };
+}
+
+/**
+ * Renders multiple audio chunks onto a single timeline based on their absolute start times.
+ * This handles overlapping audio segments correctly without extending the total duration unnecessarily.
+ */
+export function renderTimeline(
+  chunks: { buffer: AudioBuffer; startTime: number }[],
+  ctx: AudioContext
+): AudioBuffer {
+  if (chunks.length === 0) return ctx.createBuffer(1, 1, ctx.sampleRate);
+
+  // 1. Calculate total duration based on the latest ending chunk
+  let totalDuration = 0;
+  chunks.forEach(c => {
+    const end = c.startTime + c.buffer.duration;
+    if (end > totalDuration) totalDuration = end;
+  });
+
+  // Ensure reasonable minimum
+  totalDuration = Math.max(totalDuration, 0.1);
+
+  // 2. Create output buffer
+  const output = ctx.createBuffer(1, Math.ceil(totalDuration * ctx.sampleRate), ctx.sampleRate);
+  const outputData = output.getChannelData(0);
+
+  // 3. Mix
+  chunks.forEach(c => {
+    const startSample = Math.floor(c.startTime * ctx.sampleRate);
+    const inputData = c.buffer.getChannelData(0);
+    
+    // Simple mixing (Addition)
+    // In a sophisticated DAW we would normalize, but for TTS overlaps this works best to preserve volume.
+    for (let i = 0; i < inputData.length; i++) {
+      const idx = startSample + i;
+      if (idx < outputData.length) {
+        outputData[idx] += inputData[i];
+        
+        // Hard limiter to prevent digital clipping if overlap is loud
+        if (outputData[idx] > 1.0) outputData[idx] = 1.0;
+        if (outputData[idx] < -1.0) outputData[idx] = -1.0;
+      }
+    }
+  });
+  
+  return output;
 }
 
 /**

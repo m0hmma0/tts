@@ -15,7 +15,8 @@ import {
   audioBufferToBase64,
   estimateWordTimings,
   createSilentBuffer,
-  fitAudioToTargetDuration
+  fitAudioToTargetDuration,
+  renderTimeline
 } from './utils/audioUtils';
 import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
 import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming, TTSProvider, LogEntry, ScriptLine, DubbingChunk } from './types';
@@ -29,7 +30,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.10.0-hq-sola"; 
+const BUILD_REV = "v2.11.0-timeline-fix"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -276,11 +277,11 @@ export default function App() {
     };
   };
 
-  // Re-stitch all chunks into the final timeline
+  // Re-stitch all chunks into the final timeline using absolute positioning
+  // This solves the accumulation issue by mixing chunks at their specific start times
   const stitchAudio = (chunks: DubbingChunk[], currentChunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[] }>, audioCtx: AudioContext) => {
-      const orderedBuffers: AudioBuffer[] = [];
+      const renderList: { buffer: AudioBuffer, startTime: number }[] = [];
       const orderedTimings: WordTiming[] = [];
-      let currentTimelineTime = 0;
 
       for (const chunk of chunks) {
           const cached = currentChunkCache[chunk.id];
@@ -288,31 +289,25 @@ export default function App() {
               continue; 
           }
 
-          // Strict Sync Alignment:
-          // Because we force-stretched/compressed every chunk to fit its exact duration,
-          // we only need to handle gaps BETWEEN chunks, not padding inside.
-          
-          const silenceNeeded = chunk.startTime - currentTimelineTime;
-          
-          if (silenceNeeded > 0.001) {
-             orderedBuffers.push(createSilentBuffer(audioCtx, silenceNeeded));
-             currentTimelineTime += silenceNeeded;
-          }
+          renderList.push({
+            buffer: cached.buffer,
+            startTime: chunk.startTime
+          });
 
+          // Offset timings by absolute start time
           const offsetTimings = cached.timings.map(t => ({
             word: t.word,
-            start: t.start + currentTimelineTime,
-            end: t.end + currentTimelineTime
+            start: t.start + chunk.startTime,
+            end: t.end + chunk.startTime
           }));
 
-          orderedBuffers.push(cached.buffer);
           orderedTimings.push(...offsetTimings);
-          currentTimelineTime += cached.buffer.duration;
       }
       
-      if (orderedBuffers.length === 0) return null;
+      if (renderList.length === 0) return null;
       
-      const finalBuffer = concatenateAudioBuffers(orderedBuffers, audioCtx);
+      // Use mixing renderer instead of concatenation
+      const finalBuffer = renderTimeline(renderList, audioCtx);
       return { finalBuffer, orderedTimings };
   };
 
@@ -563,7 +558,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.10.0',
+      version: '2.11.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,
