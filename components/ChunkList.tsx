@@ -1,12 +1,12 @@
 
 import React, { useState, useEffect } from 'react';
 import { DubbingChunk, AudioCacheItem, WordTiming } from '../types';
-import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock } from 'lucide-react';
+import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge } from 'lucide-react';
 import { formatTimeForScript, parseScriptTimestamp } from '../utils/srtUtils';
 
 interface ChunkListProps {
   chunks: DubbingChunk[];
-  chunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[] }>;
+  chunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[], ratio?: number }>;
   isGenerating: boolean;
   onRegenerate: (chunk: DubbingChunk) => void;
   onPlay: (buffer: AudioBuffer) => void;
@@ -24,7 +24,6 @@ export const ChunkList: React.FC<ChunkListProps> = ({
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   
-  // Local edit states
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
 
@@ -58,7 +57,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
         <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center shrink-0">
             <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
                 <Clock size={16} className="text-indigo-600" />
-                Sync Manager <span className="text-[10px] font-normal text-slate-400 ml-1">(Strict Mode Active)</span>
+                Sync Manager <span className="text-[10px] font-normal text-slate-400 ml-1">(Strict Sync: Enabled)</span>
             </h3>
             <span className="text-xs text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
                 {Object.keys(chunkCache).length} / {chunks.length} Generated
@@ -68,27 +67,22 @@ export const ChunkList: React.FC<ChunkListProps> = ({
             {chunks.map((chunk, index) => {
                 const cached = chunkCache[chunk.id];
                 const targetDuration = chunk.endTime - chunk.startTime;
-                const actualDuration = cached ? cached.buffer.duration : 0;
+                // For actual displayed duration, we match target because we force-fitted it, unless cache is missing
+                const displayedDuration = cached ? cached.buffer.duration : 0;
                 
-                // Diff logic
-                const diff = actualDuration - targetDuration;
-                // In Strict Sync mode, drifts should be minimal (rounding errors)
-                const isOvershoot = diff > 0.05; 
-                const isUndershoot = diff < -0.05;
+                const ratio = cached?.ratio || 1.0;
+                const isStretched = ratio < 0.95; // Slowed down
+                const isCompressed = ratio > 1.05; // Speed up
                 
                 let borderColor = "border-transparent";
-                let statusColor = "text-slate-400";
                 
                 if (cached) {
-                    if (isOvershoot) {
-                        borderColor = "border-red-500";
-                        statusColor = "text-red-500";
-                    } else if (isUndershoot) {
-                        borderColor = "border-amber-400";
-                        statusColor = "text-amber-500";
+                    if (isCompressed) {
+                        borderColor = "border-amber-400"; // Warn about fast speech
+                    } else if (isStretched) {
+                        borderColor = "border-blue-400"; // Info about slowed speech
                     } else {
                         borderColor = "border-emerald-400";
-                        statusColor = "text-emerald-500";
                     }
                 }
 
@@ -144,23 +138,29 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                         <div className="ml-9 flex flex-wrap items-center gap-4 bg-slate-100/50 p-2 rounded-lg">
                             {isEditing ? (
                                 <div className="flex items-center gap-2">
-                                    <input 
-                                        type="text" 
-                                        value={editStart}
-                                        onChange={(e) => setEditStart(e.target.value)}
-                                        className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-0.5 focus:border-indigo-500 outline-none"
-                                        placeholder="00:00:00.000"
-                                    />
-                                    <span className="text-slate-400">→</span>
-                                    <input 
-                                        type="text" 
-                                        value={editEnd}
-                                        onChange={(e) => setEditEnd(e.target.value)}
-                                        className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-0.5 focus:border-indigo-500 outline-none"
-                                        placeholder="00:00:00.000"
-                                    />
-                                    <button onClick={() => saveEditing(chunk.id)} className="text-emerald-600 hover:bg-emerald-50 p-1 rounded"><Check size={14} /></button>
-                                    <button onClick={cancelEditing} className="text-red-500 hover:bg-red-50 p-1 rounded"><RotateCcw size={14} /></button>
+                                    <div className="flex flex-col">
+                                        <label className="text-[9px] uppercase text-slate-500 font-bold mb-0.5">Start</label>
+                                        <input 
+                                            type="text" 
+                                            value={editStart}
+                                            onChange={(e) => setEditStart(e.target.value)}
+                                            className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-0.5 focus:border-indigo-500 outline-none"
+                                        />
+                                    </div>
+                                    <span className="text-slate-400 mt-4">→</span>
+                                    <div className="flex flex-col">
+                                        <label className="text-[9px] uppercase text-slate-500 font-bold mb-0.5">End</label>
+                                        <input 
+                                            type="text" 
+                                            value={editEnd}
+                                            onChange={(e) => setEditEnd(e.target.value)}
+                                            className="w-24 text-xs font-mono border border-slate-300 rounded px-1 py-0.5 focus:border-indigo-500 outline-none"
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-1 mt-4">
+                                        <button onClick={() => saveEditing(chunk.id)} className="text-emerald-600 hover:bg-emerald-50 p-1.5 rounded"><Check size={14} /></button>
+                                        <button onClick={cancelEditing} className="text-red-500 hover:bg-red-50 p-1.5 rounded"><RotateCcw size={14} /></button>
+                                    </div>
                                 </div>
                             ) : (
                                 <div className="flex items-center gap-2 group/time cursor-pointer" onClick={() => startEditing(chunk)} title="Edit Target Duration (Constraints)">
@@ -179,24 +179,24 @@ export const ChunkList: React.FC<ChunkListProps> = ({
 
                             <div className="flex items-center gap-3 text-xs">
                                 <div className="flex flex-col">
-                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Target Constraint</span>
+                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Target</span>
                                     <span className="font-mono">{targetDuration.toFixed(2)}s</span>
                                 </div>
                                 
                                 <div className="flex flex-col">
-                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Actual Output</span>
-                                    <span className={`font-mono font-bold ${statusColor}`}>
-                                        {actualDuration > 0 ? actualDuration.toFixed(2) + 's' : '--'}
+                                    <span className="text-[10px] text-slate-400 uppercase font-bold">Generated</span>
+                                    <span className={`font-mono font-bold text-slate-600`}>
+                                        {displayedDuration > 0 ? displayedDuration.toFixed(2) + 's' : '--'}
                                     </span>
                                 </div>
 
                                 {cached && (
-                                    <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                        isOvershoot ? 'bg-red-100 text-red-600' : 
-                                        isUndershoot ? 'bg-slate-200 text-slate-500' : 'bg-emerald-100 text-emerald-600'
+                                    <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1 ${
+                                        isCompressed ? 'bg-amber-100 text-amber-700' : 
+                                        isStretched ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-600'
                                     }`}>
-                                        {isOvershoot ? `+${diff.toFixed(2)}s (Sync Warn)` : 
-                                         isUndershoot ? `Padding Added` : 'Perfect Sync'}
+                                        <Gauge size={10} />
+                                        {ratio.toFixed(2)}x Speed
                                     </div>
                                 )}
                             </div>

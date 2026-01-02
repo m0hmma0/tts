@@ -15,7 +15,7 @@ import {
   audioBufferToBase64,
   estimateWordTimings,
   createSilentBuffer,
-  fitAudioToMaxDuration
+  fitAudioToTargetDuration
 } from './utils/audioUtils';
 import { parseSRT, formatTimeForScript, parseScriptTimestamp } from './utils/srtUtils';
 import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming, TTSProvider, LogEntry, ScriptLine, DubbingChunk } from './types';
@@ -29,7 +29,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.7.0-strict-sync"; 
+const BUILD_REV = "v2.8.0-bidirectional-sync"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -57,7 +57,7 @@ export default function App() {
   const [audioCache, setAudioCache] = useState<Record<string, AudioCacheItem>>({});
 
   // Cache for batch generation chunks (Persists across errors)
-  const [chunkCache, setChunkCache] = useState<Record<string, { buffer: AudioBuffer, timings: WordTiming[] }>>({});
+  const [chunkCache, setChunkCache] = useState<Record<string, { buffer: AudioBuffer, timings: WordTiming[], ratio?: number }>>({});
 
   // The actual list of chunks derived from the script
   const [plannedChunks, setPlannedChunks] = useState<DubbingChunk[]>([]);
@@ -271,7 +271,7 @@ export default function App() {
 
     return { 
         buffer: chunkRawBuffer, 
-        timings: [], // Timings calculated after compression
+        timings: [], // Timings calculated after fitting
         wasCached: false
     };
   };
@@ -289,12 +289,8 @@ export default function App() {
           }
 
           // Strict Sync Alignment:
-          // We always respect the chunk.startTime.
-          // If there is a gap between currentTimelineTime and chunk.startTime, we fill with silence.
-          // If we are overlapping (negative silenceNeeded), strict sync implies we should have compressed the previous chunk.
-          // However, if we are still overlapping due to minimal compression limits, we might just have to overlap (mix) or cut?
-          // For Dubbing, we usually strictly cut or ensure previous fits.
-          // Since we compress chunks to fit their slots, overlaps should be negligible (floating point drift).
+          // Because we force-stretched/compressed every chunk to fit its exact duration,
+          // we only need to handle gaps BETWEEN chunks, not padding inside.
           
           const silenceNeeded = chunk.startTime - currentTimelineTime;
           
@@ -302,6 +298,13 @@ export default function App() {
              orderedBuffers.push(createSilentBuffer(audioCtx, silenceNeeded));
              currentTimelineTime += silenceNeeded;
           }
+
+          // In case of slight overlap (negative silenceNeeded) due to precision,
+          // the concatenation utility doesn't support mixing, it just appends.
+          // Since we fitted the audio, the drift should be negligible.
+          // If silenceNeeded is negative, we technically should cross-fade or cut.
+          // For now, we assume simple appending works because we fitted the duration.
+          // The visual timeline might be 1ms off but audio is contiguous.
 
           const offsetTimings = cached.timings.map(t => ({
             word: t.word,
@@ -325,13 +328,7 @@ export default function App() {
       const chunk = plannedChunks.find(c => c.id === chunkId);
       if (!chunk) return;
       
-      const oldStartStr = formatTimeForScript(chunk.startTime);
-      const oldEndStr = formatTimeForScript(chunk.endTime);
-
       let newScript = script;
-      
-      // Strategy: Find the exact substring for the first line of the chunk and replace its start/end.
-      // Note: This is a bit fragile if multiple lines have identical text/times, but sufficient for this tool.
       
       chunk.lines.forEach((line, idx) => {
            if (idx === 0) {
@@ -341,7 +338,6 @@ export default function App() {
                if (contentMatch) {
                    const textPart = contentMatch[1];
                    const newLineStr = `[${newStart} -> ${newEnd}] ${textPart}`;
-                   // Replace only the first occurrence of the original line in the script
                    newScript = newScript.replace(originalLineStr, newLineStr);
                }
            }
@@ -365,12 +361,11 @@ export default function App() {
      setGenerationState(prev => ({ ...prev, isGenerating: true, error: null }));
      setLogs([]);
      
-     // Log API and Limits
      const limitInfo = provider === 'google' 
          ? "Rate Limit: 15 RPM (Free) / 1000 RPM (Pay-as-you-go). Input: 1M tokens/min." 
          : "Rate Limit: Usage Tier Based (RPM/TPM).";
      addLog('info', `Provider: ${provider === 'google' ? 'Google Gemini 2.5' : 'OpenAI TTS'} | ${limitInfo}`);
-     addLog('info', 'Starting Strict Sync Generation...');
+     addLog('info', 'Starting Perfect Sync Generation...');
      
      const controller = new AbortController();
      abortControllerRef.current = controller;
@@ -408,20 +403,22 @@ export default function App() {
                  // Generate raw
                  const result = await generateChunkAudio(chunk, audioCtx, signal, true);
                  
-                 // STRICT SYNC COMPRESSION
-                 let finalBuffer = result.buffer;
+                 // PERFECT SYNC: STRETCH OR COMPRESS
                  const targetDuration = chunk.endTime - chunk.startTime;
+                 const rawDuration = result.buffer.duration;
                  
-                 // If the generated audio is longer than the SRT slot (plus tiny tolerance), compress it.
-                 if (finalBuffer.duration > targetDuration + 0.05) {
-                     const ratio = finalBuffer.duration / targetDuration;
-                     addLog('warn', `  ↳ Too long (${finalBuffer.duration.toFixed(2)}s). Compressing to ${targetDuration.toFixed(2)}s (${ratio.toFixed(2)}x speed).`);
-                     finalBuffer = await fitAudioToMaxDuration(finalBuffer, targetDuration, audioCtx);
+                 // Apply fitting logic
+                 const { buffer: finalBuffer, ratio } = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
+                 
+                 if (ratio > 1.05) {
+                     addLog('warn', `  ↳ Too long (${rawDuration.toFixed(2)}s). Speeding up ${ratio.toFixed(2)}x to fit.`);
+                 } else if (ratio < 0.95) {
+                     addLog('info', `  ↳ Too short (${rawDuration.toFixed(2)}s). Slowing down ${ratio.toFixed(2)}x to fill.`);
                  }
                  
                  const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
                  
-                 localCache[chunk.id] = { buffer: finalBuffer, timings };
+                 localCache[chunk.id] = { buffer: finalBuffer, timings, ratio };
                  addLog('success', `Chunk ${i+1} synced.`);
                  newlyGenerated++;
              } else {
@@ -471,22 +468,17 @@ export default function App() {
           // Force generate
           const result = await generateChunkAudio(chunk, audioCtx, signal, true);
           
-          // STRICT SYNC COMPRESSION FOR SINGLE CHUNK
-          let finalBuffer = result.buffer;
+          // STRICT SYNC BIDIRECTIONAL
           const targetDuration = chunk.endTime - chunk.startTime;
-          
-          if (finalBuffer.duration > targetDuration + 0.05) {
-               addLog('warn', `Compressing ${finalBuffer.duration.toFixed(2)}s to fit ${targetDuration.toFixed(2)}s window.`);
-               finalBuffer = await fitAudioToMaxDuration(finalBuffer, targetDuration, audioCtx);
-          } else {
-              addLog('success', `Audio fits window (${finalBuffer.duration.toFixed(2)}s <= ${targetDuration.toFixed(2)}s).`);
-          }
+          const { buffer: finalBuffer, ratio } = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
+
+          addLog('success', `Applied ${ratio.toFixed(2)}x speed to fit window.`);
           
           const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
 
           const newCache = { 
               ...chunkCache, 
-              [chunk.id]: { buffer: finalBuffer, timings } 
+              [chunk.id]: { buffer: finalBuffer, timings, ratio } 
           };
           setChunkCache(newCache);
 
@@ -564,10 +556,11 @@ export default function App() {
 
     const serializedChunkCache: Record<string, any> = {};
     for (const [key, val] of Object.entries(chunkCache)) {
-        const item = val as { buffer: AudioBuffer, timings: WordTiming[] };
+        const item = val as { buffer: AudioBuffer, timings: WordTiming[], ratio?: number };
         serializedChunkCache[key] = {
             audio: audioBufferToBase64(item.buffer),
-            timings: item.timings
+            timings: item.timings,
+            ratio: item.ratio
         };
     }
 
@@ -577,16 +570,16 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.7.0',
+      version: '2.8.0',
       timestamp: new Date().toISOString(),
       script,
       speakers,
-      provider, // Save provider selection
+      provider, 
       audioCache: serializedCache,
       chunkCache: serializedChunkCache,
       fullAudio: serializedFullAudio,
       fullTimings: generationState.timings,
-      plannedChunks // Save the chunk breakdown too so we can restore the list
+      plannedChunks 
     };
     
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -634,13 +627,13 @@ export default function App() {
             setAudioCache(newCache);
 
             // Load Chunk Cache
-            const newChunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[] }> = {};
+            const newChunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[], ratio?: number }> = {};
             if (data.chunkCache) {
                 for (const [key, value] of Object.entries(data.chunkCache)) {
-                    const v = value as { audio: string, timings: any[] };
+                    const v = value as { audio: string, timings: any[], ratio?: number };
                     const bytes = decodeBase64(v.audio);
                     const buffer = await decodeAudioData(bytes, ctx, 24000);
-                    newChunkCache[key] = { buffer, timings: v.timings || [] };
+                    newChunkCache[key] = { buffer, timings: v.timings || [], ratio: v.ratio };
                  }
             }
             setChunkCache(newChunkCache);

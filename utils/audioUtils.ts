@@ -65,34 +65,45 @@ export function createSilentBuffer(ctx: AudioContext, duration: number): AudioBu
 }
 
 /**
- * Compresses (speeds up) an AudioBuffer to fit within a maximum duration using resampling.
- * This increases pitch but ensures exact timing synchronization.
+ * Resamples an AudioBuffer to fit EXACTLY into a target duration.
+ * 
+ * Logic:
+ * - If current < target: Slows down audio (playbackRate < 1.0)
+ * - If current > target: Speeds up audio (playbackRate > 1.0)
+ * 
+ * Note: This uses simple resampling which affects pitch. 
+ * For moderate changes (0.8x - 1.2x) this is usually acceptable for speech.
  */
-export async function fitAudioToMaxDuration(
+export async function fitAudioToTargetDuration(
   buffer: AudioBuffer,
-  maxDuration: number,
+  targetDuration: number,
   ctx: AudioContext
-): Promise<AudioBuffer> {
-  // If buffer fits or maxDuration is unreasonably small, return appropriately
-  if (buffer.duration <= maxDuration || maxDuration <= 0.1) return buffer;
+): Promise<{ buffer: AudioBuffer; ratio: number }> {
+  // Tolerance to avoid unnecessary processing for sub-millisecond differences
+  if (Math.abs(buffer.duration - targetDuration) < 0.05) {
+      return { buffer, ratio: 1.0 };
+  }
 
-  const ratio = buffer.duration / maxDuration;
+  // Calculate ratio. 
+  // e.g. Buffer = 10s, Target = 5s. Ratio = 2.0 (Play twice as fast)
+  // e.g. Buffer = 5s, Target = 10s. Ratio = 0.5 (Play half speed)
+  const ratio = buffer.duration / targetDuration;
   
-  // Use OfflineAudioContext to render the sped-up audio
+  // Use OfflineAudioContext to render the retimed audio
   const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(
     buffer.numberOfChannels,
-    Math.ceil(maxDuration * ctx.sampleRate),
+    Math.ceil(targetDuration * ctx.sampleRate),
     ctx.sampleRate
   );
 
   const source = offlineCtx.createBufferSource();
   source.buffer = buffer;
-  // playbackRate > 1 means play faster (shorter duration)
   source.playbackRate.value = ratio;
   source.connect(offlineCtx.destination);
   source.start(0);
 
-  return await offlineCtx.startRendering();
+  const renderedBuffer = await offlineCtx.startRendering();
+  return { buffer: renderedBuffer, ratio };
 }
 
 /**
