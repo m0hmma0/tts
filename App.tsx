@@ -31,7 +31,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.6-strict-sync-toggle"; 
+const BUILD_REV = "v2.11.7-flow-stitching"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -319,9 +319,16 @@ export default function App() {
 
   // Re-stitch all chunks into the final timeline using absolute positioning
   // This solves the accumulation issue by mixing chunks at their specific start times
-  const stitchAudio = (chunks: DubbingChunk[], currentChunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[] }>, audioCtx: AudioContext) => {
+  const stitchAudio = (
+      chunks: DubbingChunk[], 
+      currentChunkCache: Record<string, { buffer: AudioBuffer, timings: WordTiming[] }>, 
+      audioCtx: AudioContext,
+      useNaturalFlow: boolean = false
+    ) => {
       const renderList: { buffer: AudioBuffer, startTime: number }[] = [];
       const orderedTimings: WordTiming[] = [];
+
+      let cursor = 0; // Used for natural flow mode
 
       for (const chunk of chunks) {
           const cached = currentChunkCache[chunk.id];
@@ -329,19 +336,36 @@ export default function App() {
               continue; 
           }
 
+          let startTime = chunk.startTime;
+
+          if (useNaturalFlow) {
+             // Stack chunks back-to-back
+             if (renderList.length === 0) {
+                 // Start first chunk at its script time or 0? 
+                 // Let's respect the first chunk's script time to allow for an intro silence if defined,
+                 // but subsequent chunks flow naturally.
+                 cursor = chunk.startTime;
+             }
+             startTime = cursor;
+          }
+
           renderList.push({
             buffer: cached.buffer,
-            startTime: chunk.startTime
+            startTime: startTime
           });
 
           // Offset timings by absolute start time
           const offsetTimings = cached.timings.map(t => ({
             word: t.word,
-            start: t.start + chunk.startTime,
-            end: t.end + chunk.startTime
+            start: t.start + startTime,
+            end: t.end + startTime
           }));
 
           orderedTimings.push(...offsetTimings);
+
+          if (useNaturalFlow) {
+              cursor += cached.buffer.duration;
+          }
       }
       
       if (renderList.length === 0) return null;
@@ -499,7 +523,9 @@ export default function App() {
          setChunkCache(localCache);
          
          // Stitch
-         const stitchResult = stitchAudio(chunks, localCache, audioCtx);
+         // Pass strictSync as the inverse for naturalFlow
+         const stitchResult = stitchAudio(chunks, localCache, audioCtx, !strictSync);
+         
          if (stitchResult) {
              setGenerationState({
                  isGenerating: false,
@@ -560,7 +586,9 @@ export default function App() {
           setChunkCache(newCache);
 
           // Re-stitch full audio immediately using updated chunks list (plannedChunks)
-          const stitchResult = stitchAudio(plannedChunks, newCache, audioCtx);
+          // Also pass !strictSync for natural flow
+          const stitchResult = stitchAudio(plannedChunks, newCache, audioCtx, !strictSync);
+          
           if (stitchResult) {
                setGenerationState(prev => ({
                    ...prev,
@@ -647,7 +675,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.6',
+      version: '2.11.7',
       timestamp: new Date().toISOString(),
       script,
       speakers,
