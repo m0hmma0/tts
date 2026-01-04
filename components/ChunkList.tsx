@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { DubbingChunk, AudioCacheItem, WordTiming } from '../types';
-import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge, RefreshCw, X } from 'lucide-react';
+import { Play, RotateCcw, Check, Loader2, AlertCircle, Square, Save, Clock, Lock, Gauge, RefreshCw, X, ToggleLeft, ToggleRight } from 'lucide-react';
 import { formatTimeForScript, parseScriptTimestamp } from '../utils/srtUtils';
 
 interface ChunkListProps {
@@ -11,6 +11,8 @@ interface ChunkListProps {
   onRegenerate: (chunk: DubbingChunk) => void;
   onPlay: (buffer: AudioBuffer) => void;
   onUpdateTiming: (chunkId: string, newStart: string, newEnd: string) => void;
+  strictSync: boolean;
+  setStrictSync: (enabled: boolean) => void;
 }
 
 export const ChunkList: React.FC<ChunkListProps> = ({ 
@@ -19,7 +21,9 @@ export const ChunkList: React.FC<ChunkListProps> = ({
   isGenerating, 
   onRegenerate,
   onPlay,
-  onUpdateTiming
+  onUpdateTiming,
+  strictSync,
+  setStrictSync
 }) => {
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -66,14 +70,6 @@ export const ChunkList: React.FC<ChunkListProps> = ({
       const cached = chunkCache[chunkId];
       
       if (!isNaN(speed) && speed > 0 && cached) {
-          // Natural duration of the raw audio (approximate from buffer / current ratio)
-          // Actually we stored the fitted buffer. 
-          // To get natural duration, we need: CurrentDuration * CurrentRatio
-          // But wait, cached.buffer is ALREADY stretched. 
-          // We can't easily get original duration unless we store it.
-          // However, we can approximate: If Ratio is 1.0, duration is natural.
-          // If Ratio is 2.0, duration is 0.5 * Natural. So Natural = Duration * Ratio.
-          
           const currentDuration = cached.buffer.duration;
           const currentRatio = cached.ratio || 1.0;
           const naturalDuration = currentDuration * currentRatio;
@@ -95,11 +91,23 @@ export const ChunkList: React.FC<ChunkListProps> = ({
         <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center shrink-0">
             <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
                 <Clock size={16} className="text-indigo-600" />
-                Sync Manager <span className="text-[10px] font-normal text-slate-400 ml-1">(Strict Sync: Enabled)</span>
+                Sync Manager
             </h3>
-            <span className="text-xs text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
-                {Object.keys(chunkCache).length} / {chunks.length} Generated
-            </span>
+            
+            <div className="flex items-center gap-4">
+                <button 
+                    onClick={() => setStrictSync(!strictSync)}
+                    className={`flex items-center gap-2 text-xs font-medium px-2 py-1 rounded transition-colors ${strictSync ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}
+                    title={strictSync ? "Disable to allow natural audio duration (ignores timestamp constraints)" : "Enable to force audio to fit strictly within start/end timestamps"}
+                >
+                    {strictSync ? <ToggleRight size={24} className="text-indigo-600" /> : <ToggleLeft size={24} className="text-slate-400" />}
+                    {strictSync ? "Strict Sync ON" : "Strict Sync OFF"}
+                </button>
+                
+                <span className="text-xs text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
+                    {Object.keys(chunkCache).length} / {chunks.length} Generated
+                </span>
+            </div>
         </div>
         <div className="overflow-y-auto divide-y divide-slate-100 flex-1">
             {chunks.map((chunk, index) => {
@@ -118,23 +126,25 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                 }
                 
                 const targetDuration = Math.max(0, effectiveEndTime - effectiveStartTime);
-
-                // For actual displayed duration, we match target because we force-fitted it, unless cache is missing
-                const displayedDuration = cached ? cached.buffer.duration : 0;
-                
                 const ratio = cached?.ratio || 1.0;
-                const isStretched = ratio < 0.95; // Slowed down
-                const isCompressed = ratio > 1.05; // Speed up
+                
+                // Only warn about ratio if strict sync is active, otherwise visual styling is neutral
+                const isStretched = strictSync && ratio < 0.95; 
+                const isCompressed = strictSync && ratio > 1.05; 
                 
                 let borderColor = "border-transparent";
                 
                 if (cached) {
-                    if (isCompressed) {
-                        borderColor = "border-amber-400"; // Warn about fast speech
-                    } else if (isStretched) {
-                        borderColor = "border-blue-400"; // Info about slowed speech
+                    if (strictSync) {
+                        if (isCompressed) {
+                            borderColor = "border-amber-400"; // Warn about fast speech
+                        } else if (isStretched) {
+                            borderColor = "border-blue-400"; // Info about slowed speech
+                        } else {
+                            borderColor = "border-emerald-400";
+                        }
                     } else {
-                        borderColor = "border-emerald-400";
+                        borderColor = "border-slate-300"; // Neutral generated state
                     }
                 }
 
@@ -171,7 +181,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                             onClick={() => onRegenerate(chunk)}
                                             disabled={isGenerating}
                                             className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-30"
-                                            title="Regenerate this segment (Forces strict sync to Target Time)"
+                                            title={strictSync ? "Regenerate (Forces strict sync to Target Time)" : "Regenerate (Natural Duration)"}
                                         >
                                             <RotateCcw size={16} />
                                         </button>
@@ -186,7 +196,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                         <button 
                                             onClick={() => onRegenerate(chunk)}
                                             className="p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors flex items-center gap-2 text-xs font-semibold"
-                                            title="Generate Audio for this new duration"
+                                            title="Generate Audio"
                                         >
                                             <RefreshCw size={14} /> Generate
                                         </button>
@@ -221,7 +231,7 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                         />
                                     </div>
 
-                                    {/* Speed Input */}
+                                    {/* Speed Input (Only active if strict sync allows calculation context, but readable always) */}
                                     {cached && (
                                         <div className="flex flex-col ml-2 border-l pl-3 border-slate-200">
                                             <label className="text-[9px] uppercase text-slate-500 font-bold mb-0.5 text-indigo-600">Speed (x)</label>
@@ -232,7 +242,8 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                                 max="4.0"
                                                 value={editSpeed}
                                                 onChange={(e) => handleSpeedChange(e.target.value, chunk.id)}
-                                                className="w-16 text-xs font-mono border border-indigo-200 bg-indigo-50 text-indigo-700 rounded px-1 py-1 focus:border-indigo-500 outline-none font-bold"
+                                                disabled={!strictSync}
+                                                className={`w-16 text-xs font-mono border border-indigo-200 bg-indigo-50 text-indigo-700 rounded px-1 py-1 focus:border-indigo-500 outline-none font-bold ${!strictSync ? 'opacity-50 cursor-not-allowed' : ''}`}
                                             />
                                         </div>
                                     )}
@@ -266,11 +277,12 @@ export const ChunkList: React.FC<ChunkListProps> = ({
                                         
                                         {cached && (
                                             <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1 ${
+                                                !strictSync ? 'bg-slate-100 text-slate-500' : 
                                                 isCompressed ? 'bg-amber-100 text-amber-700' : 
                                                 isStretched ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-600'
                                             }`}>
                                                 <Gauge size={10} />
-                                                {ratio.toFixed(2)}x
+                                                {strictSync ? `${ratio.toFixed(2)}x` : 'Natural'}
                                             </div>
                                         )}
                                     </div>

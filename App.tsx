@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -30,7 +31,7 @@ const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.5-auto-timing"; 
+const BUILD_REV = "v2.11.6-strict-sync-toggle"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -49,6 +50,7 @@ const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): s
 export default function App() {
   const [speakers, setSpeakers] = useState<Speaker[]>(INITIAL_SPEAKERS);
   const [script, setScript] = useState(INITIAL_SCRIPT);
+  const [strictSync, setStrictSync] = useState<boolean>(true);
   
   // TTS Provider State
   const [provider, setProvider] = useState<TTSProvider>('google');
@@ -424,7 +426,7 @@ export default function App() {
          ? "Rate Limit: 15 RPM (Free) / 1000 RPM (Pay-as-you-go). Input: 1M tokens/min." 
          : "Rate Limit: Usage Tier Based (RPM/TPM).";
      addLog('info', `Provider: ${provider === 'google' ? 'Google Gemini 2.5' : 'OpenAI TTS'} | ${limitInfo}`);
-     addLog('info', 'Starting Perfect Sync Generation...');
+     addLog('info', strictSync ? 'Starting Strict Sync Generation...' : 'Starting Natural Flow Generation...');
      
      const controller = new AbortController();
      abortControllerRef.current = controller;
@@ -462,23 +464,32 @@ export default function App() {
                  // Generate raw
                  const result = await generateChunkAudio(chunk, audioCtx, signal, true);
                  
-                 // PERFECT SYNC: STRETCH OR COMPRESS WITH PITCH PRESERVATION (SOLA)
-                 const targetDuration = chunk.endTime - chunk.startTime;
-                 const rawDuration = result.buffer.duration;
-                 
-                 // Apply fitting logic (internally uses SOLA)
-                 const { buffer: finalBuffer, ratio } = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
-                 
-                 if (ratio > 1.05) {
-                     addLog('warn', `  ↳ Too long (${rawDuration.toFixed(2)}s). Time-stretching ${ratio.toFixed(2)}x faster (Pitch Locked).`);
-                 } else if (ratio < 0.95) {
-                     addLog('info', `  ↳ Too short (${rawDuration.toFixed(2)}s). Time-stretching ${ratio.toFixed(2)}x slower (Pitch Locked).`);
+                 let finalBuffer = result.buffer;
+                 let ratio = 1.0;
+
+                 // STRICT SYNC LOGIC
+                 if (strictSync) {
+                     const targetDuration = chunk.endTime - chunk.startTime;
+                     const rawDuration = result.buffer.duration;
+                     
+                     // Apply fitting logic (internally uses SOLA)
+                     const fitResult = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
+                     finalBuffer = fitResult.buffer;
+                     ratio = fitResult.ratio;
+                     
+                     if (ratio > 1.05) {
+                         addLog('warn', `  ↳ Too long (${rawDuration.toFixed(2)}s). Time-stretching ${ratio.toFixed(2)}x faster.`);
+                     } else if (ratio < 0.95) {
+                         addLog('info', `  ↳ Too short (${rawDuration.toFixed(2)}s). Time-stretching ${ratio.toFixed(2)}x slower.`);
+                     }
+                 } else {
+                     addLog('success', `  ↳ Natural duration (${result.buffer.duration.toFixed(2)}s) used.`);
                  }
                  
                  const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
                  
                  localCache[chunk.id] = { buffer: finalBuffer, timings, ratio };
-                 addLog('success', `Chunk ${i+1} synced.`);
+                 addLog('success', `Chunk ${i+1} ready.`);
                  newlyGenerated++;
              } else {
                  addLog('info', `Chunk ${i+1} from cache.`);
@@ -515,7 +526,6 @@ export default function App() {
 
   const handleRegenerateChunk = async (chunk: DubbingChunk) => {
       addLog('info', `Regenerating chunk: ${chunk.id}`);
-      addLog('info', `Constraint: Force fit to ${formatTimeForScript(chunk.startTime)} -> ${formatTimeForScript(chunk.endTime)}`);
       
       const controller = new AbortController();
       const signal = controller.signal;
@@ -527,12 +537,20 @@ export default function App() {
           // Force generate
           const result = await generateChunkAudio(chunk, audioCtx, signal, true);
           
-          // STRICT SYNC BIDIRECTIONAL WITH PITCH LOCK
-          const targetDuration = chunk.endTime - chunk.startTime;
-          const { buffer: finalBuffer, ratio } = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
+          let finalBuffer = result.buffer;
+          let ratio = 1.0;
 
-          addLog('success', `Applied ${ratio.toFixed(2)}x time-stretch (Pitch Locked) to fit window.`);
-          
+          if (strictSync) {
+            const targetDuration = chunk.endTime - chunk.startTime;
+            addLog('info', `Constraint: Force fit to ${formatTimeForScript(chunk.startTime)} -> ${formatTimeForScript(chunk.endTime)}`);
+            const fitResult = await fitAudioToTargetDuration(result.buffer, targetDuration, audioCtx);
+            finalBuffer = fitResult.buffer;
+            ratio = fitResult.ratio;
+            addLog('success', `Applied ${ratio.toFixed(2)}x time-stretch (Pitch Locked) to fit window.`);
+          } else {
+            addLog('success', `Using natural duration: ${finalBuffer.duration.toFixed(2)}s`);
+          }
+
           const timings = estimateWordTimings(chunk.lines.map(l=>l.spokenText).join(" "), finalBuffer.duration);
 
           const newCache = { 
@@ -629,7 +647,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.5',
+      version: '2.11.6',
       timestamp: new Date().toISOString(),
       script,
       speakers,
@@ -640,6 +658,7 @@ export default function App() {
       fullTimings: generationState.timings,
       plannedChunks,
       logs // Save Logs
+      // Note: We don't save strictSync state to preference, but we could.
     };
     
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -893,6 +912,8 @@ export default function App() {
                      onRegenerate={handleRegenerateChunk}
                      onPlay={handlePlayChunk}
                      onUpdateTiming={handleUpdateScriptTiming}
+                     strictSync={strictSync}
+                     setStrictSync={setStrictSync}
                  />
              )}
              
