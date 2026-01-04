@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { SpeakerManager } from './components/SpeakerManager';
 import { ScriptEditor } from './components/ScriptEditor';
@@ -23,14 +22,15 @@ import { Speaker, VoiceName, GenerationState, AudioCacheItem, WordTiming, TTSPro
 import { Sparkles, AlertCircle, Loader2, Save, FolderOpen, XCircle, FileUp, Layers, Trash2 } from 'lucide-react';
 
 const INITIAL_SCRIPT = `[Scene: The office, early morning]
-[00:00:01.000 -> 00:00:05.000] Speaker: Hello! Import an SRT file to get started with synchronized dubbing.`;
+[00:00:01.000 -> 00:00:05.000] Speaker: Hello! Import an SRT file to get started with synchronized dubbing.
+Speaker: You can also write lines without timestamps and they will be auto-scheduled!`;
 
 // Default speaker set to Puck, single entry
 const INITIAL_SPEAKERS: Speaker[] = [
   { id: '1', name: 'Speaker', voice: VoiceName.Puck, accent: 'Neutral', speed: 'Normal', instructions: '' },
 ];
 
-const BUILD_REV = "v2.11.4-speedcontrol"; 
+const BUILD_REV = "v2.11.5-auto-timing"; 
 
 // Helper to generate a unique key for a chunk based on its content and timing target
 const generateChunkHash = (chunk: Omit<DubbingChunk, 'id'>, provider: string): string => {
@@ -103,7 +103,9 @@ export default function App() {
   };
 
   /**
-   * Helper to parse raw script into structured lines
+   * Helper to parse raw script into structured lines.
+   * Supports both timestamped "[00:00 -> 00:05] Speaker: Text" and 
+   * untimestamped "Speaker: Text" (auto-sequenced) lines.
    */
   const parseScriptLines = (rawScript: string): ScriptLine[] => {
     const rawLines = rawScript.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -113,33 +115,49 @@ export default function App() {
     const rangeRegex = /^\[(\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*->\s*(\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?)\]\s*(.*)/;
     const simpleRegex = /^\[(\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?)\]\s*(.*)/;
 
+    let cursorTime = 0; // Tracks the end of the last line to chain untimestamped lines
+
     for (const line of rawLines) {
       const rangeMatch = line.match(rangeRegex);
       const simpleMatch = line.match(simpleRegex);
       
-      let startTime = 0;
+      let startTime = cursorTime; 
       let endTime: number | null = null;
       let content = line;
 
+      // Case 1: [Start -> End] Content
       if (rangeMatch) {
         startTime = parseScriptTimestamp(rangeMatch[1]) || 0;
         endTime = parseScriptTimestamp(rangeMatch[2]);
         content = rangeMatch[3];
-      } else if (simpleMatch) {
+      } 
+      // Case 2: [Start] Content
+      else if (simpleMatch) {
         startTime = parseScriptTimestamp(simpleMatch[1]) || 0;
         content = simpleMatch[2];
-      } else {
-        continue;
+      } 
+      // Case 3: Just Content (No timestamp) -> Uses cursorTime as startTime
+      else {
+        content = line;
       }
 
+      // Check if it's a valid dialogue line (Speaker: Text)
       const colonIdx = content.indexOf(':');
-      if (colonIdx === -1) continue;
+      if (colonIdx === -1) continue; // Skip non-dialogue lines (e.g. Scene directions without speaker)
 
       const speakerName = content.slice(0, colonIdx).trim();
       let spokenText = content.slice(colonIdx + 1).trim();
       spokenText = spokenText.replace(/\[.*?\]/g, '').trim(); 
 
       if (!spokenText) continue;
+
+      // Estimate End Time if not provided
+      if (endTime === null) {
+          // Heuristic: ~0.4s per word, minimum 1.5s
+          const wordCount = spokenText.split(/\s+/).length;
+          const duration = Math.max(1.5, wordCount * 0.4);
+          endTime = startTime + duration;
+      }
 
       parsed.push({
         originalText: line,
@@ -148,6 +166,11 @@ export default function App() {
         startTime,
         endTime
       });
+
+      // Update cursor for next line
+      if (endTime > cursorTime) {
+          cursorTime = endTime;
+      }
     }
     return parsed;
   };
@@ -606,7 +629,7 @@ export default function App() {
     }
 
     const projectData = {
-      version: '2.11.4',
+      version: '2.11.5',
       timestamp: new Date().toISOString(),
       script,
       speakers,
